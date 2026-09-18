@@ -185,6 +185,40 @@ def test_terminal_progress_clears_active_row_on_completion_and_cancel(monkeypatc
     assert "Chat interface: Connected" in result.output
 
 
+def test_finish_summarizes_reasoning_tokens_across_levels():
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update(
+            "level:max",
+            {"outcome": "accepted", "reasoning_observed": True, "answer_correct": True,
+             "reasoning_tokens": 224},
+        )
+        progress.update(
+            "level:low",
+            {"outcome": "accepted", "reasoning_observed": True, "answer_correct": False,
+             "reasoning_tokens": 800},
+        )
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    normalized_output = " ".join(result.output.split())
+    assert "Reasoning tokens · max: 224 · low: 800 (wrong)" in normalized_output
+
+
+def test_finish_omits_reasoning_summary_when_no_level_ran():
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update("routing", {"outcome": "accepted"})
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    assert "Reasoning tokens ·" not in result.output
+
+
 def test_success_hides_test_cap_but_length_retry_explains_increase():
     @click.command()
     def command():
