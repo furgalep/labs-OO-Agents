@@ -5,6 +5,7 @@
 import os
 
 import click
+import pytest
 from click.testing import CliRunner
 from nooa_cli.commands import _connect_view as view
 
@@ -217,6 +218,50 @@ def test_finish_omits_reasoning_summary_when_no_level_ran():
     result = CliRunner().invoke(command)
     assert result.exit_code == 0, result.output
     assert "Reasoning tokens ·" not in result.output
+
+
+def test_length_finish_reason_says_it_ran_out_of_tokens():
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update(
+            "level:xhigh",
+            {
+                "outcome": "accepted",
+                "reasoning_observed": True,
+                "answer_correct": False,
+                "finish_reason": "length",
+            },
+        )
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    normalized_output = " ".join(result.output.split())
+    assert "Ran out of reply tokens before finishing" in normalized_output
+
+
+@pytest.mark.parametrize("finish_reason", ["error", "content_filter"])
+def test_error_or_filtered_finish_reason_keeps_the_generic_message(finish_reason):
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update(
+            "level:high",
+            {
+                "outcome": "accepted",
+                "reasoning_observed": True,
+                "answer_correct": False,
+                "finish_reason": finish_reason,
+            },
+        )
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    normalized_output = " ".join(result.output.split())
+    assert "Reply incomplete; check not conclusive" in normalized_output
+    assert "Ran out of reply tokens" not in normalized_output
 
 
 def test_success_hides_test_cap_but_length_retry_explains_increase():

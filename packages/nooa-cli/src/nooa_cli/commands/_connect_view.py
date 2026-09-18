@@ -210,7 +210,9 @@ class CheckProgress:
                     status, detail = "attention", "No reasoning details returned"
             elif record.get("reasoning_observed"):
                 detail += " · reasoning returned"
-            if record.get("finish_reason") in {"length", "error", "content_filter"}:
+            if record.get("finish_reason") == "length":
+                status, detail = "attention", "Ran out of reply tokens before finishing"
+            elif record.get("finish_reason") in {"error", "content_filter"}:
                 status, detail = "attention", "Reply incomplete; check not conclusive"
             if record.get("reason") == "previous result reused":
                 detail += " · already checked"
