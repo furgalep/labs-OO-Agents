@@ -816,8 +816,12 @@ def plan(
     if not 1 <= reasoning_output_tokens <= 32768:
         raise ValueError("reasoning_output_tokens must be 1..32768")
     vendor = "anthropic" if api_style == "anthropic" else "openai"
+    # A gateway-routed model ID can already name its own vendor as one of its
+    # path segments (e.g. "azure/anthropic/claude-opus-5", where "anthropic"
+    # is the second segment, not the first); don't double it wherever it sits.
+    wire_model = model if vendor in model.split("/") else f"{vendor}/{model}"
     entry: dict[str, Any] = {
-        "model_name": f"{vendor}/{model}",
+        "model_name": wire_model,
         "client_type": "responses" if api_style == "responses" else "completion",
         "api_style": api_style,
         # The Messages runtime adds /v1/messages; Chat/Responses expect an API base.

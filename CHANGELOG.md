@@ -6,6 +6,10 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- Fix `nooa connect` double-prefixing `model_name` for a gateway-routed model
+  ID that already names its vendor as a path segment (e.g.
+  `azure/anthropic/claude-opus-5` becoming `anthropic/azure/anthropic/claude-opus-5`).
+  The vendor prefix is now only added when it isn't already present.
 - `nooa connect`'s reasoning-level puzzle checks now end with a one-line
   "Reasoning tokens · max: N · high: N · low: N (wrong)" summary, so a
   cross-level comparison doesn't require scrolling back through the run.

@@ -440,6 +440,24 @@ async def test_alternate_cap_cannot_bypass_budget(monkeypatch):
     assert result.entry["provenance"]["probes"]["level:high"]["outcome"] == "not_probed"
 
 
+def test_gateway_routed_model_already_naming_its_vendor_is_not_double_prefixed():
+    proposal = connect.plan(
+        "local",
+        "azure/anthropic/claude-opus-5",
+        "anthropic",
+        "https://api.test/v1",
+        "CONNECT_TEST_KEY",
+    )
+    assert proposal.entry["model_name"] == "azure/anthropic/claude-opus-5"
+
+
+def test_plain_model_id_still_gets_its_vendor_prefix():
+    proposal = connect.plan(
+        "local", "claude-opus-5", "anthropic", "https://api.test/v1", "CONNECT_TEST_KEY"
+    )
+    assert proposal.entry["model_name"] == "anthropic/claude-opus-5"
+
+
 def test_fuzzy_match_finds_a_gateway_routed_model_by_its_catalogue_name():
     catalogue = [
         {"id": "anthropic/claude-opus-5"},
