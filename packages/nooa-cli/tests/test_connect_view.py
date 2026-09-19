@@ -277,7 +277,12 @@ def test_length_advice_to_raise_the_budget_is_only_for_level_checks():
     assert "increase the reply budget" not in result.output
 
 
-def test_encrypted_reasoning_bundle_shows_output_tokens_not_a_zero_count():
+def test_withheld_reasoning_text_shows_output_tokens_not_a_zero_count():
+    """Covers a signed "thinking" block whose text is empty: reasoning_encrypted
+    is True but there's no meaningful byte size to report (a signature's
+    length doesn't scale with how much was thought).
+    """
+
     @click.command()
     def command():
         progress = view.CheckProgress()
@@ -297,14 +302,18 @@ def test_encrypted_reasoning_bundle_shows_output_tokens_not_a_zero_count():
     result = CliRunner().invoke(command)
     assert result.exit_code == 0, result.output
     normalized_output = " ".join(result.output.split())
-    assert "encrypted reasoning bundle returned (687 output tokens, not split out)" in (
+    assert "reasoning text withheld by the provider (687 output tokens, not split out)" in (
         normalized_output
     )
     assert "0 reasoning tokens" not in normalized_output
-    assert "Reasoning tokens · max: 687 output (encrypted)" in normalized_output
+    assert "Reasoning tokens · max: 687 output (withheld)" in normalized_output
 
 
-def test_encrypted_reasoning_bundle_shows_its_byte_size_when_known():
+def test_withheld_reasoning_text_shows_its_byte_size_when_known():
+    """Covers a genuine redacted_thinking block, which does carry a
+    measurable opaque data blob.
+    """
+
     @click.command()
     def command():
         progress = view.CheckProgress()
@@ -326,10 +335,10 @@ def test_encrypted_reasoning_bundle_shows_its_byte_size_when_known():
     assert result.exit_code == 0, result.output
     normalized_output = " ".join(result.output.split())
     assert (
-        "encrypted reasoning bundle returned "
+        "reasoning text withheld by the provider "
         "(687 output tokens, not split out; ~100 bytes of encrypted state)"
     ) in normalized_output
-    assert "Reasoning tokens · max: 687 output (encrypted, ~100B)" in normalized_output
+    assert "Reasoning tokens · max: 687 output (withheld, ~100B)" in normalized_output
 
 
 def test_unsplit_reasoning_tokens_falls_back_to_output_tokens():

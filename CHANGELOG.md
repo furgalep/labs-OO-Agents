@@ -6,6 +6,15 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- Fix reasoning-text-withheld detection missing the dialect actually observed
+  live for Claude Sonnet 5/Opus 5 via Azure or Bedrock: a normal *signed*
+  `thinking` block whose visible text is empty, not Anthropic's distinct
+  `redacted_thinking` block type the original detection only checked for.
+  Both are now detected and shown as "reasoning text withheld by the
+  provider"; only the genuine `redacted_thinking` case (which carries an
+  opaque data blob) reports a byte size, since a signature's length doesn't
+  scale with how much was thought.
+
 - `nooa connect`'s encrypted-reasoning-bundle message now includes the
   decoded byte size of Anthropic's `redacted_thinking` blob when available
   ("~N bytes of encrypted state"), a rough size signal since there is no way

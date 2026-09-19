@@ -1343,30 +1343,44 @@ async def run_steps(
             # checks in _session.py already detect it.
             reasoning_parts = [part for part in response.parts if part.kind == "reasoning"]
             reasoning = bool(reasoning_parts or (usage and usage.reasoning_tokens))
-            # Anthropic's redacted_thinking blocks are a distinct, detectable
-            # wire type (chat_parts.py preserves the raw block on .native),
-            # not just "reasoning with no visible text" — surface that instead
-            # of reporting a token count litellm has no text left to estimate.
+            # Anthropic withholds the visible thinking text in (at least) two
+            # distinct wire shapes, both preserved on .native by chat_parts.py:
+            # a genuine redacted_thinking block (opaque "data" blob, no text
+            # field at all), and a normal *signed* "thinking" block whose
+            # "thinking" text happens to be empty (observed live for Claude
+            # Sonnet 5/Opus 5 via this Bedrock/Azure route) — chat_parts.py
+            # accepts empty text there as long as a real signature is present.
+            # Either way there's no visible text left for litellm to estimate
+            # a token count from — surface that instead of a bare, misleading 0.
             reasoning_encrypted = False
             reasoning_encrypted_bytes = None
             for part in reasoning_parts:
                 if not isinstance(part.native, Mapping):
                     continue
                 block = part.native.get("thinking_blocks")
-                if not isinstance(block, Mapping) or block.get("type") != "redacted_thinking":
+                if not isinstance(block, Mapping):
                     continue
-                reasoning_encrypted = True
-                data = block.get("data")
-                if isinstance(data, str) and data:
+                kind = block.get("type")
+                if kind == "redacted_thinking" and isinstance(block.get("data"), str):
+                    reasoning_encrypted = True
                     # The decoded byte count of an opaque encrypted blob is a
                     # rough size signal only — a proxy for how much reasoning
                     # state it carries, not a token count. Anthropic gives no
                     # way to convert this into an actual reasoning-token figure.
+                    data = block["data"]
                     try:
                         size = len(base64.b64decode(data, validate=False))
                     except (binascii.Error, ValueError):
                         size = len(data)
                     reasoning_encrypted_bytes = (reasoning_encrypted_bytes or 0) + size
+                elif kind == "thinking" and isinstance(block.get("signature"), str) and not part.text:
+                    # chat_parts.py already popped "thinking" text out of this
+                    # dict, so part.text (not the dict) is the only place left
+                    # to check whether it was actually empty. A signature's
+                    # length is fixed by the signing scheme, not by how much
+                    # was thought — there is no size signal to report here,
+                    # only that the text was withheld.
+                    reasoning_encrypted = True
             tool = any(call.name == "probe_tool" for call in response.tool_calls)
             tokens = usage.input_tokens + usage.output_tokens if usage else 0
         except Exception as exc:

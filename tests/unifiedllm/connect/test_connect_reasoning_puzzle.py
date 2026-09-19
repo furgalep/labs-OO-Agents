@@ -135,6 +135,88 @@ async def test_redacted_thinking_falls_back_to_char_count_for_non_base64_data(mo
 
 
 @pytest.mark.asyncio
+async def test_signed_thinking_block_with_empty_text_is_flagged_with_no_size(monkeypatch):
+    """The dialect actually observed live for Claude Sonnet 5/Opus 5 via Azure
+    or Bedrock: a normal *signed* "thinking" block (not redacted_thinking)
+    whose visible text simply comes back empty. Detected the same way, but
+    with no byte size — a signature's length doesn't scale with how much was
+    thought, unlike a redacted_thinking block's opaque data blob.
+    """
+
+    async def fake_run_probe(alias, entry, probe, api_key):
+        response = LLMResponse(
+            parts=(
+                AssistantReasoning(
+                    text="",
+                    native={
+                        "thinking_blocks": {
+                            "type": "thinking",
+                            "signature": "a-real-signature-value",
+                        }
+                    },
+                ),
+            ),
+            finish_reason="stop",
+            usage=LLMUsage(input_tokens=147, output_tokens=687, total_tokens=834),
+        )
+        return response, True, "litellm"
+
+    monkeypatch.setattr(connect, "_run_probe", fake_run_probe)
+    proposal = connect.plan(
+        "test",
+        "claude-opus-5",
+        "anthropic",
+        "https://api.test/v1",
+        "",
+        reasoning_levels={"on": {"thinking": {"type": "adaptive"}}},
+    )
+    result = await connect.check_stage(proposal, "reasoning", api_key="test-key")
+    record = result.entry["provenance"]["probes"]["level:on"]
+    assert record["reasoning_observed"] is True
+    assert record["reasoning_encrypted"] is True
+    assert record["reasoning_encrypted_bytes"] is None
+
+
+@pytest.mark.asyncio
+async def test_signed_thinking_block_with_real_text_is_not_flagged_as_withheld(monkeypatch):
+    """A normal, fully visible signed thinking block must not be treated as
+    withheld — only an empty one should be.
+    """
+
+    async def fake_run_probe(alias, entry, probe, api_key):
+        response = LLMResponse(
+            parts=(
+                AssistantReasoning(
+                    text="Let me work through this step by step.",
+                    native={
+                        "thinking_blocks": {
+                            "type": "thinking",
+                            "signature": "a-real-signature-value",
+                        }
+                    },
+                ),
+            ),
+            finish_reason="stop",
+            usage=LLMUsage(input_tokens=147, output_tokens=687, total_tokens=834),
+        )
+        return response, True, "litellm"
+
+    monkeypatch.setattr(connect, "_run_probe", fake_run_probe)
+    proposal = connect.plan(
+        "test",
+        "claude-opus-5",
+        "anthropic",
+        "https://api.test/v1",
+        "",
+        reasoning_levels={"on": {"thinking": {"type": "adaptive"}}},
+    )
+    result = await connect.check_stage(proposal, "reasoning", api_key="test-key")
+    record = result.entry["provenance"]["probes"]["level:on"]
+    assert record["reasoning_observed"] is True
+    assert record["reasoning_encrypted"] is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("style", ["chat", "responses", "anthropic"])
 @pytest.mark.parametrize(
     "answer,correct", [("B G D A C E F H", True), ("ABCDEFGH", False), ("", False)]

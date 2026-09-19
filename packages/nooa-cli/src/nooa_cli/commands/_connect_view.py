@@ -38,13 +38,15 @@ def format_budget(tokens):
 def _reasoning_tokens_label(record):
     """Describe what's actually known about a level check's reasoning cost.
 
-    A real, positive count from the endpoint/litellm is shown as-is. Anthropic's
-    redacted_thinking blocks are a distinct, detectable wire type (real
-    reasoning occurred; the provider withholds the text), not just "no
-    reasoning" — litellm's reasoning_tokens estimate is a text-length count
-    and reads 0 when there is no visible text to count, regardless of how much
-    thinking actually happened, so showing that 0 as though it were measured
-    would be misleading. output_tokens is shown instead where it's available,
+    A real, positive count from the endpoint/litellm is shown as-is. Anthropic
+    can withhold the visible thinking text in more than one wire shape — a
+    genuine redacted_thinking block (an opaque encrypted blob, no text field
+    at all), or a normal *signed* "thinking" block whose text simply comes
+    back empty (observed live for Claude Sonnet 5/Opus 5 via Azure/Bedrock) —
+    but either way litellm's reasoning_tokens estimate is a text-length count
+    that reads 0 when there is no visible text, regardless of how much
+    thinking actually happened. Showing that 0 as though it were measured
+    would be misleading. output_tokens is shown instead where available,
     since Anthropic bills thinking tokens as ordinary output tokens without
     splitting them out. Returns "" when nothing is known.
     """
@@ -58,7 +60,7 @@ def _reasoning_tokens_label(record):
         size = record.get("reasoning_encrypted_bytes")
         size_note = f"; ~{size:,} bytes of encrypted state" if isinstance(size, int) else ""
         return (
-            f"encrypted reasoning bundle returned ({output_tokens:,} output tokens, "
+            f"reasoning text withheld by the provider ({output_tokens:,} output tokens, "
             f"not split out{size_note})"
         )
     if record.get("reasoning_observed"):
@@ -77,7 +79,7 @@ def _reasoning_tokens_summary(record):
     if record.get("reasoning_encrypted"):
         size = record.get("reasoning_encrypted_bytes")
         size_note = f", ~{size:,}B" if isinstance(size, int) else ""
-        return f"{output_tokens:,} output (encrypted{size_note})"
+        return f"{output_tokens:,} output (withheld{size_note})"
     return f"{output_tokens:,} output"
 
 
