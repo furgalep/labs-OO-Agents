@@ -20,7 +20,7 @@ import stat
 import tempfile
 import time
 from collections import deque
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import dataclass, replace
@@ -1346,8 +1346,8 @@ async def run_steps(
             # not just "reasoning with no visible text" — surface that instead
             # of reporting a token count litellm has no text left to estimate.
             reasoning_encrypted = any(
-                isinstance(part.native, dict)
-                and isinstance(part.native.get("thinking_blocks"), dict)
+                isinstance(part.native, Mapping)
+                and isinstance(part.native.get("thinking_blocks"), Mapping)
                 and part.native["thinking_blocks"].get("type") == "redacted_thinking"
                 for part in reasoning_parts
             )
