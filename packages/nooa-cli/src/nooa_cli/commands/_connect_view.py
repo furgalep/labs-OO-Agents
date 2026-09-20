@@ -274,8 +274,6 @@ class CheckProgress:
                     detail += f" · {tokens_label}"
                     self.reasoning_levels[name[6:]] = record
                 detail += " · answer correct" if record["answer_correct"] else " · answer incorrect"
-                if not record["answer_correct"]:
-                    status = "attention"
         elif name == "cache" and outcome == "confirmed" and record.get("input_tokens"):
             cached, total = record.get("cached_input_tokens", 0), record["input_tokens"]
             detail = f"Reused {cached / total:.0%} of input ({cached:,} / {total:,} tokens)"

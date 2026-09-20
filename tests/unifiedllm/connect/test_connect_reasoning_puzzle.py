@@ -29,6 +29,26 @@ def test_scheduling_puzzle_has_one_solution():
     assert solutions == ["BGDACEFH"]
 
 
+def test_wrong_puzzle_answer_alone_is_not_a_check_failure():
+    """The puzzle exists to elicit reasoning, not to prove the model can
+    solve it. A wrong answer with reasoning genuinely observed must pass.
+    """
+    from nooa.unifiedllm.connect._records import check_status
+
+    record = {"outcome": "accepted", "reasoning_observed": True, "answer_correct": False}
+    assert check_status("level:high", record, missing_reasoning=False) == "passed"
+
+
+def test_missing_reasoning_is_still_a_check_failure():
+    """Unlike a wrong answer, a genuinely missing reasoning signal is exactly
+    what this check exists to verify — that must still flag attention.
+    """
+    from nooa.unifiedllm.connect._records import check_status
+
+    record = {"outcome": "accepted", "reasoning_observed": False, "answer_correct": True}
+    assert check_status("level:high", record, missing_reasoning=True) == "attention"
+
+
 @pytest.mark.asyncio
 async def test_reasoning_observed_counts_an_empty_text_reasoning_part(monkeypatch):
     """Claude Sonnet 5/Opus 5 via Azure or Bedrock return a reasoning part with a

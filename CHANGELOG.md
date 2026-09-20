@@ -6,6 +6,11 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- A wrong answer on `nooa connect`'s reasoning-level puzzle no longer flags
+  that check for attention. The puzzle exists to elicit reasoning, not to
+  prove the model can solve it; only a missing reasoning signal (the thing
+  the check actually verifies) still does.
+
 - Fix reasoning-text-withheld detection missing the dialect actually observed
   live for Claude Sonnet 5/Opus 5 via Azure or Bedrock: a normal *signed*
   `thinking` block whose visible text is empty, not Anthropic's distinct

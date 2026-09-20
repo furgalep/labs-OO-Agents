@@ -186,6 +186,29 @@ def test_terminal_progress_clears_active_row_on_completion_and_cancel(monkeypatc
     assert "Chat interface: Connected" in result.output
 
 
+def test_wrong_answer_shows_a_passed_icon_not_attention():
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update(
+            "level:low",
+            {
+                "outcome": "accepted",
+                "reasoning_observed": True,
+                "answer_correct": False,
+                "reasoning_tokens": 800,
+            },
+        )
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    normalized_output = " ".join(result.output.split())
+    assert "✓ Reasoning · low:" in normalized_output
+    assert "answer incorrect" in normalized_output
+    assert "Results · 1 passed · 0 need attention · 0 skipped" in normalized_output
+
+
 def test_finish_summarizes_reasoning_tokens_across_levels():
     @click.command()
     def command():
