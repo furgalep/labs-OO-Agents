@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import uuid
 from copy import deepcopy
 
 REPLY_CAP = 2048
@@ -176,8 +177,13 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
         else OpenAIProviderFormatter()
     )
     # Non-repetitive lines give a reusable prefix without any user's private data.
+    # Short hex ids in place of zero-padded decimal digit runs measurably lower
+    # (but do not eliminate) a stochastic provider content filter observed live
+    # on this check's arithmetic-verification turn; see CHANGELOG.
+    train_ids = [uuid.uuid5(uuid.NAMESPACE_DNS, f"train-{i}").hex[:6] for i in range(360)]
     padding = "\n".join(
-        f"Reference record {i:04d}: item {i * 17 + 3:06d} belongs to batch {i % 97:02d}."
+        f"Train {train_ids[i]} departs platform {1 + i % 12}; its trip takes "
+        f"{15 + (i * 17 + 3) % 180} minutes."
         for i in range(360)
     )
     messages = render_context(
@@ -199,7 +205,11 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
                 # The cached formatter partitions SYSTEM context blocks and
                 # renders the dynamic half as a trailing USER message.
                 role=Role.SYSTEM,
-                content="Find the sum of item numbers for records 0013 and 0027. Call probe_tool with the sum as a string, or answer briefly.",
+                content=(
+                    f"Find the sum of trip durations in minutes for trains {train_ids[13]} "
+                    f"and {train_ids[27]}. Call probe_tool with the sum as a string, or "
+                    "answer briefly."
+                ),
                 metadata=BlockMetadata(static=False, user_block=True),
             ),
         ],

@@ -6,6 +6,16 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- `nooa connect`'s session check now references trains by short hex id
+  instead of zero-padded decimal record/item numbers. Live testing against
+  Claude Opus 5 via Bedrock found the original wording's `finish_reason:
+  "error"` on the replay turn was a real, provider-side content-filter
+  false-positive (confirmed by replaying the identical request outside
+  Connect: same request, ~50% pass rate) rather than a request-construction
+  bug. Removing the digit-run-shaped ids roughly halved the observed failure
+  rate (about 1 in 6-7 live runs) but did not eliminate it; a retry on
+  `content_filter` would be needed to fully close this out.
+
 - `nooa connect`'s reasoning-level rows now show a character count for real,
   visible reasoning text when litellm never attempted a token-count estimate
   for it (observed live for Qwen and DeepSeek routes; litellm's text-length
