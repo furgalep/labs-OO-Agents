@@ -6,6 +6,15 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- `nooa connect`'s session check now reuses the reasoning-level puzzle for its
+  conversation task instead of trivial arithmetic. The old task was easy
+  enough that a model with adaptive/content-dependent reasoning effort could
+  legitimately skip reasoning on it even at a real reasoning level — a false
+  "reasoning not retained" result indistinguishable from an actual replay
+  bug (observed live for `gpt-6-astra`; live-verified fixed for Claude Opus
+  5 and Qwen, both now showing reasoning on every turn). As with level
+  checks, a wrong answer is not graded, only whether reasoning was observed.
+
 - Fix `nooa connect` always reporting `reasoning_encrypted: false` on
   Responses-API routes (e.g. `gpt-6-astra`) even when the provider genuinely
   returned encrypted reasoning. Detection only recognized the Chat-style

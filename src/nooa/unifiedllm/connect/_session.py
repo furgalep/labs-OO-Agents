@@ -7,6 +7,8 @@ import json
 import uuid
 from copy import deepcopy
 
+from . import REASONING_CHECK_PROMPT
+
 REPLY_CAP = 2048
 # Includes padding, schema/instructions, and up to two prior reply-sized items.
 TOKEN_RESERVATION = 3 * (8192 + 3 * REPLY_CAP)
@@ -204,11 +206,21 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
                 key="task",
                 # The cached formatter partitions SYSTEM context blocks and
                 # renders the dynamic half as a trailing USER message.
+                #
+                # Reuses the reasoning-level puzzle rather than a trivial
+                # arithmetic task: a model with adaptive/content-dependent
+                # reasoning effort can legitimately skip reasoning on
+                # something this easy even at a real reasoning level, which
+                # previously showed up as a false "reasoning not retained"
+                # result indistinguishable from an actual replay bug
+                # (observed live for gpt-6-astra). The puzzle is hard enough
+                # to force genuine reasoning at any configured level. As
+                # with level checks, a wrong answer here is not graded —
+                # only whether reasoning was observed at all.
                 role=Role.SYSTEM,
                 content=(
-                    f"Find the sum of trip durations in minutes for trains {train_ids[13]} "
-                    f"and {train_ids[27]}. Call probe_tool with the sum as a string, or "
-                    "answer briefly."
+                    f"{REASONING_CHECK_PROMPT}\n\nCall probe_tool with your eight-letter "
+                    "answer, or answer briefly."
                 ),
                 metadata=BlockMetadata(static=False, user_block=True),
             ),
