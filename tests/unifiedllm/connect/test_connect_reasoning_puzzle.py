@@ -234,6 +234,67 @@ async def test_signed_thinking_block_with_real_text_is_not_flagged_as_withheld(m
     record = result.entry["provenance"]["probes"]["level:on"]
     assert record["reasoning_observed"] is True
     assert record["reasoning_encrypted"] is False
+    assert record["reasoning_text_chars"] == len("Let me work through this step by step.")
+
+
+@pytest.mark.asyncio
+async def test_visible_reasoning_text_with_no_litellm_estimate_reports_char_count(monkeypatch):
+    """The dialect observed live for Qwen and DeepSeek routes on this
+    gateway: real, non-empty reasoning text came back (no thinking_blocks
+    structure at all, just a plain reasoning_content string), but litellm's
+    text-length estimate -- which only exists for Anthropic/Bedrock -- never
+    ran, leaving reasoning_tokens at 0 despite real reasoning having occurred.
+    """
+    reasoning_text = "First, note that H must be last. " * 20
+
+    async def fake_run_probe(alias, entry, probe, api_key):
+        response = LLMResponse(
+            parts=(AssistantReasoning(text=reasoning_text),),
+            finish_reason="stop",
+            usage=LLMUsage(input_tokens=115, output_tokens=2329, total_tokens=2444),
+        )
+        return response, True, "litellm"
+
+    monkeypatch.setattr(connect, "_run_probe", fake_run_probe)
+    proposal = connect.plan(
+        "test",
+        "qwen3.6-27b",
+        "chat",
+        "https://api.test/v1",
+        "",
+        reasoning_levels={"on": {"chat_template_kwargs": {"enable_thinking": True}}},
+    )
+    result = await connect.check_stage(proposal, "reasoning", api_key="test-key")
+    record = result.entry["provenance"]["probes"]["level:on"]
+    assert record["reasoning_observed"] is True
+    assert record["reasoning_encrypted"] is False
+    assert record["reasoning_tokens"] == 0
+    assert record["reasoning_text_chars"] == len(reasoning_text)
+
+
+@pytest.mark.asyncio
+async def test_no_visible_reasoning_text_reports_no_char_count(monkeypatch):
+    async def fake_run_probe(alias, entry, probe, api_key):
+        response = LLMResponse(
+            parts=(),
+            finish_reason="stop",
+            usage=LLMUsage(input_tokens=115, output_tokens=20, total_tokens=135),
+        )
+        return response, True, "litellm"
+
+    monkeypatch.setattr(connect, "_run_probe", fake_run_probe)
+    proposal = connect.plan(
+        "test",
+        "some-model",
+        "chat",
+        "https://api.test/v1",
+        "",
+        reasoning_levels={"on": {"reasoning_effort": "high"}},
+    )
+    result = await connect.check_stage(proposal, "reasoning", api_key="test-key")
+    record = result.entry["provenance"]["probes"]["level:on"]
+    assert record["reasoning_observed"] is False
+    assert record["reasoning_text_chars"] is None
 
 
 @pytest.mark.asyncio

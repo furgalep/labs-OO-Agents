@@ -6,6 +6,12 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- `nooa connect`'s reasoning-level rows now show a character count for real,
+  visible reasoning text when litellm never attempted a token-count estimate
+  for it (observed live for Qwen and DeepSeek routes; litellm's text-length
+  estimate only exists for Anthropic/Bedrock). Never the text itself, only
+  its length, matching the existing encrypted-blob byte-size treatment.
+
 - A wrong answer on `nooa connect`'s reasoning-level puzzle no longer flags
   that check for attention. The puzzle exists to elicit reasoning, not to
   prove the model can solve it; only a missing reasoning signal (the thing

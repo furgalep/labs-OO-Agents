@@ -23,6 +23,7 @@ class ProbeRecord(TypedDict, total=False):
     reasoning_observed: bool
     reasoning_encrypted: bool
     reasoning_encrypted_bytes: int | None
+    reasoning_text_chars: int | None
     answer_correct: bool
     tool_observed: bool
     state_retained: bool

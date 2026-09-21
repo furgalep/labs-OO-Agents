@@ -1381,6 +1381,18 @@ async def run_steps(
                     # was thought — there is no size signal to report here,
                     # only that the text was withheld.
                     reasoning_encrypted = True
+            # litellm's text-length reasoning_tokens estimate (see the
+            # redacted_thinking/signed-empty-thinking comment above) only
+            # exists in its Anthropic/Bedrock transformation code — for every
+            # other provider it makes no estimate at all, even when real,
+            # non-empty reasoning text came back (observed live for Qwen and
+            # DeepSeek routes on this gateway). We already have that text
+            # in hand; report its length ourselves rather than nothing. Never
+            # the text itself — only its size, same privacy stance as the
+            # encrypted-blob byte count above.
+            reasoning_text_chars = (
+                sum(len(part.text) for part in reasoning_parts if part.text) or None
+            )
             tool = any(call.name == "probe_tool" for call in response.tool_calls)
             tokens = usage.input_tokens + usage.output_tokens if usage else 0
         except Exception as exc:
@@ -1424,6 +1436,7 @@ async def run_steps(
             reasoning_observed=reasoning,
             reasoning_encrypted=reasoning_encrypted,
             reasoning_encrypted_bytes=reasoning_encrypted_bytes,
+            reasoning_text_chars=reasoning_text_chars,
             tool_observed=tool,
             reported_tokens=tokens,
             input_tokens=usage.input_tokens if usage else None,

@@ -48,7 +48,14 @@ def _reasoning_tokens_label(record):
     thinking actually happened. Showing that 0 as though it were measured
     would be misleading. output_tokens is shown instead where available,
     since Anthropic bills thinking tokens as ordinary output tokens without
-    splitting them out. Returns "" when nothing is known.
+    splitting them out.
+
+    litellm's text-length estimate only exists for Anthropic/Bedrock at all —
+    for every other provider (observed live for Qwen and DeepSeek), it never
+    attempts one, even when real, non-empty reasoning text came back. When we
+    have that text in hand, its character count is shown as a size signal
+    instead of just "not reported separately" with nothing further. Returns
+    "" when nothing is known.
     """
     tokens = record.get("reasoning_tokens")
     if isinstance(tokens, int) and tokens > 0:
@@ -64,7 +71,9 @@ def _reasoning_tokens_label(record):
             f"not split out{size_note})"
         )
     if record.get("reasoning_observed"):
-        return f"{output_tokens:,} output tokens (reasoning tokens not reported separately)"
+        chars = record.get("reasoning_text_chars")
+        chars_note = f"; ~{chars:,} reasoning chars" if isinstance(chars, int) else ""
+        return f"{output_tokens:,} output tokens (reasoning tokens not reported separately{chars_note})"
     return ""
 
 
@@ -80,7 +89,9 @@ def _reasoning_tokens_summary(record):
         size = record.get("reasoning_encrypted_bytes")
         size_note = f", ~{size:,}B" if isinstance(size, int) else ""
         return f"{output_tokens:,} output (withheld{size_note})"
-    return f"{output_tokens:,} output"
+    chars = record.get("reasoning_text_chars")
+    chars_note = f", ~{chars:,} chars" if isinstance(chars, int) else ""
+    return f"{output_tokens:,} output{chars_note}"
 
 
 def check_failure(outcome):

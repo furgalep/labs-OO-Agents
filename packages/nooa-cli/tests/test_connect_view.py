@@ -364,6 +364,64 @@ def test_withheld_reasoning_text_shows_its_byte_size_when_known():
     assert "Reasoning tokens · max: 687 output (withheld, ~100B)" in normalized_output
 
 
+def test_visible_reasoning_with_no_token_estimate_shows_its_char_count():
+    """Covers Qwen/DeepSeek-style routes: real reasoning text came back but
+    litellm never attempted a token-count estimate for it.
+    """
+
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update(
+            "level:on",
+            {
+                "outcome": "accepted",
+                "reasoning_observed": True,
+                "reasoning_encrypted": False,
+                "reasoning_tokens": 0,
+                "reasoning_text_chars": 2400,
+                "output_tokens": 2329,
+                "answer_correct": True,
+            },
+        )
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    normalized_output = " ".join(result.output.split())
+    assert (
+        "2,329 output tokens (reasoning tokens not reported separately; "
+        "~2,400 reasoning chars)"
+    ) in normalized_output
+    assert "Reasoning tokens · on: 2,329 output, ~2,400 chars" in normalized_output
+
+
+def test_visible_reasoning_without_char_count_omits_the_note():
+    @click.command()
+    def command():
+        progress = view.CheckProgress()
+        progress.update(
+            "level:on",
+            {
+                "outcome": "accepted",
+                "reasoning_observed": True,
+                "reasoning_encrypted": False,
+                "reasoning_tokens": 0,
+                "output_tokens": 2329,
+                "answer_correct": True,
+            },
+        )
+        progress.finish()
+
+    result = CliRunner().invoke(command)
+    assert result.exit_code == 0, result.output
+    normalized_output = " ".join(result.output.split())
+    assert "2,329 output tokens (reasoning tokens not reported separately)" in normalized_output
+    assert "reasoning chars" not in normalized_output
+    assert "Reasoning tokens · on: 2,329 output" in normalized_output
+    assert "chars" not in normalized_output.split("Reasoning tokens ·")[1].split("Results")[0]
+
+
 def test_unsplit_reasoning_tokens_falls_back_to_output_tokens():
     @click.command()
     def command():
