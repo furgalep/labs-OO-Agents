@@ -289,7 +289,19 @@ async def session_steps(alias, entry, *, api_key, budget_tokens):
                     CacheBoundary(),
                     {
                         "role": "user",
-                        "content": f"Check {index}: verify the recorded result briefly.",
+                        # A plain "verify the answer" ask is itself trivial —
+                        # answerable from memory without reasoning again, so a
+                        # model with adaptive/content-dependent reasoning
+                        # effort can legitimately skip it on this turn even
+                        # though it reasoned on the original puzzle (observed
+                        # live for gpt-6-astra). Changing one rule forces a
+                        # genuine new reasoning pass rather than a recall.
+                        "content": (
+                            f"Check {index}: one rule changed — H now runs first, not "
+                            "last. Solve the puzzle again with this update. Call "
+                            "probe_tool with your new eight-letter answer, or answer "
+                            "briefly."
+                        ),
                     },
                 ]
             )

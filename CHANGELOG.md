@@ -6,6 +6,16 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- `nooa connect`'s session check's replay/repeat turns now change one rule of
+  the puzzle instead of asking the model to "verify the recorded result."
+  Verifying a known answer from memory is itself trivial enough that a model
+  with adaptive/content-dependent reasoning effort could skip reasoning on
+  it, even right after reasoning on the original puzzle in the same session
+  (observed live for `gpt-6-astra` via its Azure route: turn 1 reasoned,
+  turns 2-3 did not). Forcing a genuine re-solve fixed it — live-verified
+  `reasoning_observed_by_turn: [True, True, True]` for both `gpt-6-astra`
+  and Claude Opus 5, cache reuse unaffected.
+
 - `nooa connect`'s session check now reuses the reasoning-level puzzle for its
   conversation task instead of trivial arithmetic. The old task was easy
   enough that a model with adaptive/content-dependent reasoning effort could
