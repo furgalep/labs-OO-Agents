@@ -198,6 +198,46 @@ async def test_signed_thinking_block_with_empty_text_is_flagged_with_no_size(mon
 
 
 @pytest.mark.asyncio
+async def test_responses_encrypted_reasoning_item_is_flagged_as_encrypted(monkeypatch):
+    """Responses-style routes (response_parts.py) store the raw output item on
+    .native directly rather than wrapping it under "thinking_blocks" the way
+    Chat-style routes do. Detection must recognize this shape too, or every
+    Responses/OpenAI-style encrypted reasoning route (observed live for
+    gpt-6-astra) always reads as "not encrypted".
+    """
+
+    encoded_blob = base64.b64encode(b"x" * 64).decode()
+
+    async def fake_run_probe(alias, entry, probe, api_key):
+        response = LLMResponse(
+            parts=(
+                AssistantReasoning(
+                    text="",
+                    native={"type": "reasoning", "encrypted_content": encoded_blob},
+                ),
+            ),
+            finish_reason="stop",
+            usage=LLMUsage(input_tokens=101, output_tokens=259, total_tokens=360),
+        )
+        return response, True, "litellm"
+
+    monkeypatch.setattr(connect, "_run_probe", fake_run_probe)
+    proposal = connect.plan(
+        "test",
+        "gpt-6-astra",
+        "responses",
+        "https://api.test/v1",
+        "",
+        reasoning_levels={"on": {"reasoning": {"effort": "medium"}}},
+    )
+    result = await connect.check_stage(proposal, "reasoning", api_key="test-key")
+    record = result.entry["provenance"]["probes"]["level:on"]
+    assert record["reasoning_observed"] is True
+    assert record["reasoning_encrypted"] is True
+    assert record["reasoning_encrypted_bytes"] == 64
+
+
+@pytest.mark.asyncio
 async def test_signed_thinking_block_with_real_text_is_not_flagged_as_withheld(monkeypatch):
     """A normal, fully visible signed thinking block must not be treated as
     withheld — only an empty one should be.

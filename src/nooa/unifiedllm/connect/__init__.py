@@ -1354,33 +1354,55 @@ async def run_steps(
             # a token count from — surface that instead of a bare, misleading 0.
             reasoning_encrypted = False
             reasoning_encrypted_bytes = None
+
+            def _encrypted_blob_size(data: str) -> int:
+                # The decoded byte count of an opaque encrypted blob is a
+                # rough size signal only — a proxy for how much reasoning
+                # state it carries, not a token count. Providers give no way
+                # to convert this into an actual reasoning-token figure.
+                try:
+                    return len(base64.b64decode(data, validate=False))
+                except (binascii.Error, ValueError):
+                    return len(data)
+
             for part in reasoning_parts:
                 if not isinstance(part.native, Mapping):
                     continue
                 block = part.native.get("thinking_blocks")
-                if not isinstance(block, Mapping):
+                if isinstance(block, Mapping):
+                    kind = block.get("type")
+                    if kind == "redacted_thinking" and isinstance(block.get("data"), str):
+                        reasoning_encrypted = True
+                        data = block["data"]
+                        reasoning_encrypted_bytes = (reasoning_encrypted_bytes or 0) + (
+                            _encrypted_blob_size(data)
+                        )
+                    elif (
+                        kind == "thinking"
+                        and isinstance(block.get("signature"), str)
+                        and not part.text
+                    ):
+                        # chat_parts.py already popped "thinking" text out of
+                        # this dict, so part.text (not the dict) is the only
+                        # place left to check whether it was actually empty.
+                        # A signature's length is fixed by the signing
+                        # scheme, not by how much was thought — there is no
+                        # size signal to report here, only that the text was
+                        # withheld.
+                        reasoning_encrypted = True
                     continue
-                kind = block.get("type")
-                if kind == "redacted_thinking" and isinstance(block.get("data"), str):
+                # Responses-style routes (response_parts.py) store the raw
+                # output item on .native directly, not wrapped under
+                # "thinking_blocks" — e.g. {"type": "reasoning",
+                # "encrypted_content": "..."}. Detect that shape too, or
+                # Responses/OpenAI-style encrypted reasoning always reads as
+                # "not encrypted" here regardless of what the provider sent.
+                encrypted_content = part.native.get("encrypted_content")
+                if isinstance(encrypted_content, str) and encrypted_content:
                     reasoning_encrypted = True
-                    # The decoded byte count of an opaque encrypted blob is a
-                    # rough size signal only — a proxy for how much reasoning
-                    # state it carries, not a token count. Anthropic gives no
-                    # way to convert this into an actual reasoning-token figure.
-                    data = block["data"]
-                    try:
-                        size = len(base64.b64decode(data, validate=False))
-                    except (binascii.Error, ValueError):
-                        size = len(data)
-                    reasoning_encrypted_bytes = (reasoning_encrypted_bytes or 0) + size
-                elif kind == "thinking" and isinstance(block.get("signature"), str) and not part.text:
-                    # chat_parts.py already popped "thinking" text out of this
-                    # dict, so part.text (not the dict) is the only place left
-                    # to check whether it was actually empty. A signature's
-                    # length is fixed by the signing scheme, not by how much
-                    # was thought — there is no size signal to report here,
-                    # only that the text was withheld.
-                    reasoning_encrypted = True
+                    reasoning_encrypted_bytes = (reasoning_encrypted_bytes or 0) + (
+                        _encrypted_blob_size(encrypted_content)
+                    )
             # litellm's text-length reasoning_tokens estimate (see the
             # redacted_thinking/signed-empty-thinking comment above) only
             # exists in its Anthropic/Bedrock transformation code — for every

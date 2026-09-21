@@ -6,6 +6,14 @@ to follow semantic versioning.
 
 ## [Unreleased]
 
+- Fix `nooa connect` always reporting `reasoning_encrypted: false` on
+  Responses-API routes (e.g. `gpt-6-astra`) even when the provider genuinely
+  returned encrypted reasoning. Detection only recognized the Chat-style
+  native shape (`part.native["thinking_blocks"]`); Responses routes store the
+  raw output item directly on `.native` (`{"type": "reasoning",
+  "encrypted_content": "..."}`), which was never checked. Both shapes are now
+  detected.
+
 - `nooa connect`'s session check now references trains by short hex id
   instead of zero-padded decimal record/item numbers. Live testing against
   Claude Opus 5 via Bedrock found the original wording's `finish_reason:
