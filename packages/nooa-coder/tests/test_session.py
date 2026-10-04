@@ -196,7 +196,7 @@ async def test_close_is_idempotent_and_closes_the_agent(make_session):
     assert calls == [("agent closed", "cancelled")]
     assert closed == ["closed"]
     assert session.info.status == "closed"
-    assert session.handle._closed
+    assert session.handle.closed
     with pytest.raises(RuntimeError, match="closed"):
         await session.submit("late")
 
@@ -538,11 +538,11 @@ async def test_checkpoint_is_written_only_when_the_state_changed(
 
 
 async def test_checkpoint_failure_does_not_fail_the_turn(make_session, monkeypatch, caplog):
-    def broken(path, blob):
+    def broken(blob):
         raise sqlite3.OperationalError("disk full")
 
-    monkeypatch.setattr(session_module, "_write_snapshot", broken)
     session, _ = make_session(done("fine"))
+    monkeypatch.setattr(session.handle.storage, "save_snapshot_json", broken)
     with caplog.at_level(logging.WARNING, logger=session_module.__name__):
         assert await asyncio.wait_for(session.prompt("go"), TIMEOUT) == Done(explanation="fine")
         await session.wait_for_checkpoint()
