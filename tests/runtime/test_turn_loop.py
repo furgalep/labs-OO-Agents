@@ -117,3 +117,89 @@ async def test_the_loop_ends_when_no_channel_is_left(agent):
 
     await asyncio.wait_for(poll(), TIMEOUT)
     assert isinstance(seen[0].error, ValueError)
+
+
+async def test_a_failing_before_turn_fails_the_turn_without_running_it(agent):
+    seen = record(agent, "TurnBegan", "TurnSettled")
+    calls = []
+
+    async def before_turn(notification):
+        calls.append(notification)
+        if len(calls) == 1:
+            raise RuntimeError("could not record the turn")
+
+    agent.turns.start(before_turn=before_turn)
+    channel = agent.queue_manager.get_channel("user_messages")
+    channel.put("first")
+    await settled(seen, 1)
+    [end] = seen
+    assert (end.kind, end.ran, type(end.error)) == ("error", False, RuntimeError)
+    channel.put("second")  # the loop goes on
+    await settled(seen, 2)
+    assert seen[-1].result == Done(explanation="second")
+
+
+async def test_a_cancel_during_before_turn_settles_without_running(agent):
+    seen = record(agent, "TurnBegan", "TurnSettled")
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def before_turn(notification):
+        entered.set()
+        await release.wait()
+
+    agent.turns.start(before_turn=before_turn)
+    agent.queue_manager.get_channel("user_messages").put("hello")
+    await asyncio.wait_for(entered.wait(), TIMEOUT)
+    cancelling = asyncio.ensure_future(agent.turns.cancel(by="user"))
+    await asyncio.sleep(0)
+    release.set()
+    assert await asyncio.wait_for(cancelling, TIMEOUT) is True
+    [end] = seen  # no TurnBegan: the turn never started
+    assert (end.kind, end.ran, end.cancelled_by) == ("cancelled", False, "user")
+    assert not any(isinstance(e, TurnCancelled) for e in agent.event_manager.all_events())
+
+
+async def test_cancel_returns_when_recording_the_cancel_fails(agent, monkeypatch):
+    seen = record(agent, "TurnSettled")
+    agent.turns.start()
+    agent.queue_manager.get_channel("user_messages").put("block")
+    await asyncio.wait_for(agent.started.wait(), TIMEOUT)
+    add = agent.event_manager.add
+
+    def failing_add(event, **kwargs):
+        if isinstance(event, TurnCancelled):
+            raise OSError("disk full")
+        return add(event, **kwargs)
+
+    monkeypatch.setattr(agent.event_manager, "add", failing_add)
+    assert await asyncio.wait_for(agent.turns.cancel(), TIMEOUT) is True
+    [end] = seen
+    assert (end.kind, type(end.error)) == ("error", OSError)
+    assert agent.turns.started  # the loop is still alive
+
+
+async def test_stop_starting_lets_the_running_turn_finish(agent):
+    seen = record(agent, "TurnBegan", "TurnSettled")
+    agent.turns.start()
+    channel = agent.queue_manager.get_channel("user_messages")
+    channel.put("block")
+    await asyncio.wait_for(agent.started.wait(), TIMEOUT)
+    channel.put("next")
+    agent.turns.stop_starting()
+    turn = agent.turns._turn
+    turn.cancel()  # stands in for the turn finishing on its own
+    await settled(seen, 1)
+    await asyncio.sleep(0.05)
+    assert [e.event_type for e in seen] == ["TurnBegan", "TurnSettled"]
+    assert channel.snapshot() == ["next"]
+
+
+async def test_a_stopped_loop_can_start_again(agent):
+    seen = record(agent, "TurnSettled")
+    agent.turns.start()
+    await agent.turns.stop()
+    assert not agent.turns.started
+    agent.turns.start()
+    agent.queue_manager.get_channel("user_messages").put("again")
+    await settled(seen, 1)
+    assert seen[0].result == Done(explanation="again")

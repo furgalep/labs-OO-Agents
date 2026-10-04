@@ -8,8 +8,10 @@ and the recorder around it: items go in on the agent's queue channels
 (``submit``), each recorded (``ItemAdmitted``) before it is put, so nothing
 admitted is lost. The Session learns what happened from the agent's
 events (``ChannelItemConsumed`` / ``ChannelItemsDiscarded`` from the
-channels, ``TurnBegan`` / ``TurnSettled`` from the loop) and turns them
-into the ledger, prompt outcomes, checkpoints and session updates.
+channels, ``TurnSettled`` from the loop) and turns them into the ledger,
+prompt outcomes, checkpoints and session updates. What must happen before
+a turn, and fail it if it cannot (swapping in a new model, recording the
+turn's start), is the loop's ``before_turn`` hook, not a subscription.
 """
 
 import asyncio
@@ -36,7 +38,7 @@ from nooa.interactive import (
     apply_model_limits,
 )
 from nooa.llm_types import LLMResponse
-from nooa.runtime.turn_loop import TurnBegan, TurnLoopEnded, TurnSettled
+from nooa.runtime.turn_loop import TurnLoopEnded, TurnSettled
 from nooa.storage.json_snapshot import snapshot_to_json
 from nooa_coder.session.events import (
     ItemAdmitted,
@@ -196,8 +198,6 @@ class Session:
         self._waiting: list[str] = []  # items whose prompt stays open over a Waiting
         self._started = False
         self._usage_before: Usage = self.info.usage.model_copy()
-        # Model clients being closed off the turn path (set_model swaps).
-        self._closing_clients: set[asyncio.Task[None]] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed = False
@@ -217,7 +217,6 @@ class Session:
         self._unsubscribe_items = (
             events.on("ChannelItemConsumed", lambda e: self._on_consumed(e.channel, e.item)),
             events.on("ChannelItemsDiscarded", lambda e: self._on_discarded(e.channel, e.items)),
-            events.on("TurnBegan", self._on_turn_began),
             events.on("TurnSettled", self._on_turn_settled),
             events.on("TurnLoopEnded", self._on_loop_ended),
         )
@@ -247,7 +246,9 @@ class Session:
         context = contextvars.Context()
         for hook in self._loop_context_hooks:
             context.run(hook)
-        self.agent.turns.start(turn_method=self.options.turn_method, context=context)
+        self.agent.turns.start(
+            turn_method=self.options.turn_method, context=context, before_turn=self._before_turn
+        )
 
     async def close(self) -> None:
         """Stop the loop and release everything the session owns. Idempotent.
@@ -269,6 +270,10 @@ class Session:
         # closed, the file lock released and ClosedUpdate emitted whatever
         # failed before.
         self._closing = True
+        # No new turn from here on (a running one goes on while children
+        # close): an item a doomed turn took would be recorded as consumed
+        # and never come back on load.
+        self.agent.turns.stop_starting()
         await self._close_step("closing its children", self._before_close)
         await self._close_step("stopping the turn loop", self.agent.turns.stop)
         self._resolve_all(TurnCancelledOutcome(by="host"))
@@ -282,7 +287,6 @@ class Session:
         await self._close_step("closing the agent", self.agent.aclose)
         for unsubscribe in self._unsubscribe_items:
             await self._close_step("unsubscribing from its queues", unsubscribe)
-        await self._close_step("closing swapped-out model clients", self._await_closing_clients)
         await self._close_step("closing its model client", self._close_owned_llm)
         await self._close_step("closing its record", self.handle.close)
         self._closed = True
@@ -316,10 +320,6 @@ class Session:
         for item_id in waiting:
             self._resolve(item_id, TurnCancelledOutcome(by=by))
         return False
-
-    async def _await_closing_clients(self) -> None:
-        for task in list(self._closing_clients):
-            await self._close_step("closing a swapped-out model client", lambda t=task: t)
 
     async def _close_owned_llm(self) -> None:
         llm, self._owned_llm = self._owned_llm, None
@@ -557,17 +557,19 @@ class Session:
 
     # ---- turns: the agent's TurnLoop runs them, the Session records them ----
 
-    def _on_turn_began(self, event: TurnBegan) -> None:
-        """``TurnBegan``: swap in a pending model, record which items the turn took."""
-        if self._pending_model is not None:
-            self._apply_pending_model()
-        item_ids = list(self._consumed)
-        self.handle.events.add(
-            TurnStarted(item_ids=item_ids, item_preview=_preview(event.notification))
-        )
-        self._emit(TurnStartedUpdate(session_id=self.id, item_ids=item_ids))
-        self.info.status = "running"
+    async def _before_turn(self, notification: dict[str, list[Any]]) -> None:
+        """The loop's ``before_turn``: swap in a pending model, record the turn's start.
+
+        If this raises, the turn does not run and settles as an error, so
+        its prompts get ``TurnFailedError``.
+        """
         self._usage_before = self.info.usage.model_copy()
+        if self._pending_model is not None:
+            await self._apply_pending_model()
+        item_ids = list(self._consumed)
+        self.handle.events.add(TurnStarted(item_ids=item_ids, item_preview=_preview(notification)))
+        self.info.status = "running"
+        self._emit(TurnStartedUpdate(session_id=self.id, item_ids=item_ids))
 
     def _on_turn_settled(self, event: TurnSettled) -> None:
         """``TurnSettled``: record the outcome; if recording fails, fail the turn's prompts."""
@@ -786,25 +788,24 @@ class Session:
         if previous is not None:
             await _aclose(previous[1])
 
-    def _apply_pending_model(self) -> None:
-        pending, self._pending_model = self._pending_model, None
+    async def _apply_pending_model(self) -> None:
+        pending = self._pending_model
         if pending is None:
             return
         alias, client = pending
         self.agent.set_llm(client)
         apply_model_limits(self.agent)
+        # Cleared only once swapped in: a failed swap is retried next turn.
+        self._pending_model = None
         old, self._owned_llm = self._owned_llm, client
+        # New same-model children share the new client.
+        self.options = self.options.model_copy(update={"model": alias, "llm": client})
+        self.info.model = alias
         if old is not None:
             if self.llm_in_use(old):
                 self._retired_llms.append(old)  # a child shares it: close it with this session
             else:
-                # Closed off the turn path; close() waits for it.
-                task = asyncio.get_running_loop().create_task(_aclose(old))
-                self._closing_clients.add(task)
-                task.add_done_callback(self._closing_clients.discard)
-        # New same-model children share the new client.
-        self.options = self.options.model_copy(update={"model": alias, "llm": client})
-        self.info.model = alias
+                await _aclose(old)
 
     async def set_mode(self, mode: str) -> None:
         """Record the permission mode (``auto`` or ``ask``); nothing enforces it yet.
