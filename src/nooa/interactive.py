@@ -40,6 +40,7 @@ with hidden:
     from nooa.events import _json_safe
     from nooa.runtime.channels import Channel, ChannelReader, QueueManager
     from nooa.runtime.producers_skill import ProducersSkill
+    from nooa.runtime.turn_loop import TurnLoop
     from nooa.strategies import CodeActStrategy
     from nooa.tools.web_publisher import WebPublisher
 
@@ -391,6 +392,9 @@ class InteractiveAgent(Agent, llm=_DEFAULT_LLM):
     # ``self.user_messages``) directly, not through a string-keyed
     # registry lookup.
     queue_manager: Annotated[QueueManager, hidden, nosnapshot]
+    # Drives handle() from the channels once a host calls turns.start().
+    # Hidden: the model must not cancel or await its own turns.
+    turns: Annotated[TurnLoop, hidden, nosnapshot]
     # Producer-side Channel (full put / pop_last / snapshot / etc.)
     # — hidden, since the LLM has no business calling those.
     _user_messages_in: Annotated[Channel, hidden, nosnapshot]
@@ -409,6 +413,7 @@ class InteractiveAgent(Agent, llm=_DEFAULT_LLM):
         self.queue_manager = QueueManager(event_manager=self.event_manager)
         self._user_messages_in = self.queue_manager.queue("user_messages")
         self.user_messages = self._user_messages_in.reader
+        self.turns = TurnLoop(self)
         self.producers = ProducersSkill()
         # Surface pending-queue counts (and a short preview of each item)
         # to the LLM every turn — the agent reads queue depth straight

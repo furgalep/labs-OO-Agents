@@ -482,12 +482,13 @@ async def test_a_loop_with_no_channels_left_closes_the_session(make_session):
 
 async def test_withdraw_a_steer_that_became_a_message(make_session):
     session, _ = make_session(start=False)
-    session._turn_task = asyncio.ensure_future(asyncio.sleep(10))  # a turn is running
+    turns = session.agent.turns
+    turns._turn = asyncio.ensure_future(asyncio.sleep(10))  # a turn is running
     try:
         receipt = await session.steer("TOO-LATE")
     finally:
-        session._turn_task.cancel()
-        session._turn_task = None
+        turns._turn.cancel()
+        turns._turn = None
     pending = asyncio.ensure_future(session.outcome(receipt.item_id))
     session._admit_leftover_steers()  # the turn settled before any model call saw it
     channel = session.agent.queue_manager.get_channel("user_messages")

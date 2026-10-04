@@ -515,7 +515,7 @@ async def test_prepare_runs_before_publish_and_start(registry, root_options, mod
 
     async def prepare(session):
         assert registry.get(session.id) is None  # not published yet
-        assert session._loop_task is None  # not started yet
+        assert not session.agent.turns.started  # not started yet
         session.subscribe(seen.append)
 
     child = await registry.create(
@@ -549,7 +549,7 @@ async def test_prepare_on_load_sees_requeued_turns_but_not_on_attach(
     root_id = root.id
     await root.cancel()
     # Leave an unhandled item behind: close before the loop can consume it.
-    root._loop_task.cancel()
+    root.agent.turns._task.cancel()
     await root.submit("LEFT-BEHIND")
     await registry.close_all()
 
@@ -637,7 +637,7 @@ async def test_a_turn_cancelled_from_inside_fails_and_the_loop_goes_on(root_opti
     root = await registry.create(options)
     with pytest.raises(TurnFailedError, match="cancelled from inside"):
         await asyncio.wait_for(root.prompt("one"), 5)
-    assert not root._loop_task.done()
+    assert not root.agent.turns._task.done()
     assert await asyncio.wait_for(root.prompt("two"), 5) == Done(explanation="finished")
     [first, _] = [raw for _, raw in registry.store.load_rows(root.id, frozenset({"TurnEnded"}))]
     assert first["outcome_kind"] == "error"
@@ -749,9 +749,9 @@ async def test_a_steer_buffered_at_a_crash_is_requeued(
     await asyncio.wait_for(started.wait(), TIMEOUT)
     receipt = await root.steer("STEER-CRASH")
     # Crash: the loop dies without settling the turn, and the file is let go.
-    root._loop_task.cancel()
+    root.agent.turns._task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
-        await root._loop_task
+        await root.agent.turns._task
     root.handle.close()
     first.cancel()
 

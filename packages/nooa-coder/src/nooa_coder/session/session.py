@@ -1,12 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026, NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Session: owns one agent, its turn loop and its durable record.
+"""Session: one agent's durable record, built around the agent's own turn loop.
 
-Items go in on the agent's named queue channels (``submit``); each is
-recorded (``ItemAdmitted``) before it is queued, so nothing admitted is
-lost. The loop races the channels while idle and runs one turn when
-something arrives, calling the agent's turn method named in the options.
-Output leaves as data: session updates to subscribers and the transcript.
+The agent's ``TurnLoop`` (``agent.turns``) races its channels and runs
+the turns; it knows nothing about sessions. The Session is the producer
+and the recorder around it: items go in on the agent's queue channels
+(``submit``), each recorded (``ItemAdmitted``) before it is put, so nothing
+admitted is lost. The Session learns what happened from the agent's
+events (``ChannelItemConsumed`` / ``ChannelItemsDiscarded`` from the
+channels, ``TurnBegan`` / ``TurnSettled`` from the loop) and turns them
+into the ledger, prompt outcomes, checkpoints and session updates.
 """
 
 import asyncio
@@ -27,7 +30,7 @@ from typing import Any, Literal
 from pydantic import BaseModel
 
 from nooa.context_blocks.roles import Role
-from nooa.events import Notification, PythonOutput, ResultStatus
+from nooa.events import Notification
 from nooa.interactive import (
     Done,
     InteractiveAgent,
@@ -36,6 +39,7 @@ from nooa.interactive import (
     apply_model_limits,
 )
 from nooa.llm_types import LLMResponse
+from nooa.runtime.turn_loop import TurnBegan, TurnLoopEnded, TurnSettled
 from nooa.storage.json_snapshot import snapshot_to_json
 from nooa_coder.session.events import (
     ItemAdmitted,
@@ -58,7 +62,6 @@ from nooa_coder.session.items import (
     SessionInfo,
     TitleChangedUpdate,
     TranscriptEntry,
-    TurnCancelled,
     TurnCancelledOutcome,
     TurnEndedUpdate,
     TurnStartedUpdate,
@@ -218,12 +221,10 @@ class Session:
         self._finished: OrderedDict[str, Any] = OrderedDict()
         self._consumed: list[str] = []  # consumed since the last turn settled
         self._waiting: list[str] = []  # items whose prompt stays open over a Waiting
-        self._loop_task: asyncio.Task[None] | None = None
-        self._turn_task: asyncio.Task[Any] | None = None
-        self._cancel_by: str | None = None
-        self._interrupted: PythonOutput | None = None
-        self._settled = asyncio.Event()
-        self._settled.set()
+        self._started = False
+        self._usage_before: Usage = self.info.usage.model_copy()
+        # Model clients being closed off the turn path (set_model swaps).
+        self._closing_clients: set[asyncio.Task[None]] = set()
         self._close_task: asyncio.Task[None] | None = None
         self._closing = False
         self._closed = False
@@ -238,19 +239,20 @@ class Session:
         # The agent's queue channels publish every item they hand to a consumer
         # (the loop's race and drain, agent get()) and every item they drop
         # unconsumed (flush, clear, channel removed).
+        # The agent's TurnLoop publishes each turn's start and end, and its own end.
+        events = agent.event_manager
         self._unsubscribe_items = (
-            agent.event_manager.on(
-                "ChannelItemConsumed", lambda e: self._on_consumed(e.channel, e.item)
-            ),
-            agent.event_manager.on(
-                "ChannelItemsDiscarded", lambda e: self._on_discarded(e.channel, e.items)
-            ),
+            events.on("ChannelItemConsumed", lambda e: self._on_consumed(e.channel, e.item)),
+            events.on("ChannelItemsDiscarded", lambda e: self._on_discarded(e.channel, e.items)),
+            events.on("TurnBegan", self._on_turn_began),
+            events.on("TurnSettled", self._on_turn_settled),
+            events.on("TurnLoopEnded", self._on_loop_ended),
         )
 
     # ---- lifecycle ---------------------------------------------------
 
     def add_loop_context_hook(self, hook: Callable[[], object]) -> None:
-        """Run ``hook`` once at the top of the loop, inside the loop's own context.
+        """Run ``hook`` once in the loop's own context before the loop starts.
 
         Context variables set there are seen by every turn (each turn task
         copies the loop's context), e.g. the port ``ChildRef`` resolves.
@@ -258,18 +260,21 @@ class Session:
         self._loop_context_hooks.append(hook)
 
     def start(self) -> None:
-        """Start the turn loop.
+        """Start the agent's turn loop with the options' turn method.
 
-        The loop task runs in a fresh ``contextvars.Context``: a session
-        created from inside another agent's cell must not inherit that
-        agent's call stack, generation state or scoped blocks.
+        The loop runs in a fresh ``contextvars.Context`` (a session created
+        from inside another agent's cell must not inherit that agent's call
+        stack, generation state or scoped blocks), after the loop context
+        hooks have run in it.
         """
-        if self._loop_task is not None:
+        if self._started:
             return
         self._ensure_open()
-        self._loop_task = asyncio.get_running_loop().create_task(
-            self._loop(), name=f"session-loop:{self.id}", context=contextvars.Context()
-        )
+        self._started = True
+        context = contextvars.Context()
+        for hook in self._loop_context_hooks:
+            context.run(hook)
+        self.agent.turns.start(turn_method=self.options.turn_method, context=context)
 
     async def close(self) -> None:
         """Stop the loop and release everything the session owns. Idempotent.
@@ -292,7 +297,7 @@ class Session:
         # failed before.
         self._closing = True
         await self._close_step("closing its children", self._before_close)
-        await self._close_step("stopping the turn loop", self._stop_loop)
+        await self._close_step("stopping the turn loop", self.agent.turns.stop)
         self._resolve_all(TurnCancelledOutcome(by="host"))
         pending, self._pending_model = self._pending_model, None
         if pending is not None:
@@ -304,6 +309,7 @@ class Session:
         await self._close_step("closing the agent", self.agent.aclose)
         for unsubscribe in self._unsubscribe_items:
             await self._close_step("unsubscribing from its queues", unsubscribe)
+        await self._close_step("closing swapped-out model clients", self._await_closing_clients)
         await self._close_step("closing its model client", self._close_owned_llm)
         await self._close_step("closing its record", self.handle.close)
         self._closed = True
@@ -321,13 +327,6 @@ class Session:
         except (Exception, asyncio.CancelledError):
             logger.exception("Session %s: %s failed", self.id, what)
 
-    async def _stop_loop(self) -> None:
-        await self._stop_turn(by="host")
-        if self._loop_task is not None:
-            self._loop_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._loop_task
-
     async def cancel(self, *, by: str = "user") -> bool:
         """Stop the running turn; return whether one was running.
 
@@ -338,23 +337,16 @@ class Session:
         prompts left open by a ``Waiting`` are closed with
         ``TurnCancelledOutcome`` and no event is written.
         """
-        task = self._turn_task
-        if task is None or task.done():
-            waiting, self._waiting = self._waiting, []
-            for item_id in waiting:
-                self._resolve(item_id, TurnCancelledOutcome(by=by))
-            return False
-        await self._stop_turn(by=by)
-        return True
+        if await self.agent.turns.cancel(by=by):
+            return True
+        waiting, self._waiting = self._waiting, []
+        for item_id in waiting:
+            self._resolve(item_id, TurnCancelledOutcome(by=by))
+        return False
 
-    async def _stop_turn(self, *, by: str) -> None:
-        """Cancel a running turn and wait until the loop has settled it."""
-        task = self._turn_task
-        if task is None or task.done():
-            return
-        self._cancel_by = by
-        task.cancel()
-        await self._settled.wait()
+    async def _await_closing_clients(self) -> None:
+        for task in list(self._closing_clients):
+            await self._close_step("closing a swapped-out model client", lambda t=task: t)
 
     async def _close_owned_llm(self) -> None:
         llm, self._owned_llm = self._owned_llm, None
@@ -386,8 +378,7 @@ class Session:
         A steer is never lost.
         """
         self._ensure_open()
-        task = self._turn_task
-        if task is None or task.done():
+        if not self.agent.turns.running:
             return self._admit(text, channel="user_messages", source=source)
         event = ItemAdmitted(
             channel="steer", item_json=item_to_json(text), item_type=type_name(text), source=source
@@ -411,7 +402,7 @@ class Session:
 
     def _flush_steers(self, _event: Any) -> None:
         """``BeforeTurn`` handler: hand buffered steers to the coming model call."""
-        if not self._pending_steers or self._turn_task is None:
+        if not self._pending_steers or not self.agent.turns.running:
             return
         steers, self._pending_steers = self._pending_steers, []
         for item_id, text, source in steers:
@@ -599,50 +590,31 @@ class Session:
                 ),
             )
 
-    # ---- the loop ----------------------------------------------------
+    # ---- turns: the agent's TurnLoop runs them, the Session records them ----
 
-    async def _loop(self) -> None:
-        for hook in self._loop_context_hooks:
-            hook()
-        queues = self.agent.queue_manager
-        while not self._closing:
-            try:
-                wins = await queues.race()
-            except asyncio.CancelledError:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise  # the loop itself is being cancelled (close)
-                # A raced channel was flushed or removed, which cancels its
-                # waiters: race again over the channels that are left.
-                continue
-            except Exception as exc:
-                # No channel left to wait on (race() raises ValueError):
-                # nothing can reach this session any more.
-                logger.exception("Session %s: the turn loop cannot wait for input", self.id)
-                self._end_loop(exc)
-                return
-            notification: dict[str, list[Any]] = {}
-            for name, item in wins:
-                notification.setdefault(name, []).append(item)
-            for name, channel in queues.channels().items():
-                if drained := channel.drain():
-                    notification.setdefault(name, []).extend(drained)
-            if not notification and not any(
-                channel.mode == "event" for channel in queues.channels().values()
-            ):
-                continue  # a wake with nothing to hand over
-            try:
-                await self._run_turn(notification)
-            except Exception as exc:
-                # The loop must outlive any turn: fail what the turn owed and go on.
-                logger.exception("Session %s: turn bookkeeping failed", self.id)
-                self._fail_turn(exc)
-
-    def _end_loop(self, exc: Exception) -> None:
-        """The loop cannot go on: fail every open outcome and close the session."""
-        error = TurnFailedError(
-            f"The session's turn loop stopped: {type(exc).__name__}: {exc}", exc
+    def _on_turn_began(self, event: TurnBegan) -> None:
+        """``TurnBegan``: swap in a pending model, record which items the turn took."""
+        if self._pending_model is not None:
+            self._apply_pending_model()
+        item_ids = list(self._consumed)
+        self.handle.events.add(
+            TurnStarted(item_ids=item_ids, item_preview=_preview(event.notification))
         )
+        self._emit(TurnStartedUpdate(session_id=self.id, item_ids=item_ids))
+        self.info.status = "running"
+        self._usage_before = self.info.usage.model_copy()
+
+    def _on_turn_settled(self, event: TurnSettled) -> None:
+        """``TurnSettled``: record the outcome; if recording fails, fail the turn's prompts."""
+        try:
+            self._settle(event)
+        except Exception as exc:
+            logger.exception("Session %s: turn bookkeeping failed", self.id)
+            self._fail_turn(exc)
+
+    def _on_loop_ended(self, event: TurnLoopEnded) -> None:
+        """The loop cannot wait for input: fail every open outcome and close the session."""
+        error = TurnFailedError(f"The session's turn loop stopped: {event.message}", event.error)
         self._waiting = []
         for item_id in list(self._futures):
             self._resolve(item_id, error)
@@ -653,7 +625,6 @@ class Session:
 
     def _fail_turn(self, exc: Exception) -> None:
         """Settle a turn whose own settling failed: its prompts get ``TurnFailedError``."""
-        self._turn_task = None
         owed, self._waiting, self._consumed = self._waiting + self._consumed, [], []
         error = TurnFailedError(f"{type(exc).__name__}: {exc}", exc)
         for item_id in owed:
@@ -665,53 +636,24 @@ class Session:
                     session_id=self.id, outcome_kind="error", outcome={"error": str(error)}
                 )
             )
-        self._settled.set()
 
-    async def _run_turn(self, notification: dict[str, list[Any]]) -> None:
-        if self._pending_model is not None:
-            await self._apply_pending_model()
-        item_ids = list(self._consumed)
-        self.handle.events.add(TurnStarted(item_ids=item_ids, item_preview=_preview(notification)))
-        self._emit(TurnStartedUpdate(session_id=self.id, item_ids=item_ids))
-        self._settled.clear()
-        self._cancel_by = None
-        self._interrupted = None
-        self.info.status = "running"
-        usage_before = self.info.usage.model_copy()
-        method = getattr(self.agent, self.options.turn_method)
-        self._turn_task = asyncio.create_task(method(notification), name=f"session-turn:{self.id}")
-        outcome: Any
-        kind: OutcomeKind
-        try:
-            outcome, kind = _classify(await self._turn_task)
-        except asyncio.CancelledError as exc:
-            current = asyncio.current_task()
-            if current is not None and current.cancelling():
-                # The loop itself is being cancelled (close): not a turn outcome.
-                self._turn_task = None
-                self._settled.set()
-                raise
-            if self._cancel_by is not None:
-                outcome, kind = TurnCancelledOutcome(by=self._cancel_by), "cancelled"
-            else:
-                # Something inside the turn cancelled it, not cancel().
-                outcome = TurnFailedError("turn was cancelled from inside", exc)
-                kind = "error"
-        except Exception as exc:
-            logger.exception("Turn failed in session %s", self.id)
-            outcome, kind = TurnFailedError(f"{type(exc).__name__}: {exc}", exc), "error"
-        finally:
-            self._turn_task = None
-        self._settle(outcome, kind, usage_before)
-
-    def _settle(self, outcome: Any, kind: OutcomeKind, usage_before: Usage) -> None:
+    def _settle(self, event: TurnSettled) -> None:
         # Items stay in self._consumed / self._waiting until the end, so a
         # failure part way leaves them for _fail_turn to resolve.
-        consumed = list(self._consumed)
+        kind: OutcomeKind = event.kind
+        outcome: Any
         if kind == "cancelled":
-            self._record_cancel(outcome.by)
+            outcome = TurnCancelledOutcome(by=event.cancelled_by or "host")
+            self._emit(
+                CancelledUpdate(session_id=self.id, by=outcome.by, interrupted=event.interrupted)
+            )
+        elif kind == "error":
+            outcome = TurnFailedError(event.message, event.error)
+        else:
+            outcome = event.result
+        consumed = list(self._consumed)
         self._admit_leftover_steers()
-        usage = _usage_delta(usage_before, self.info.usage)
+        usage = _usage_delta(self._usage_before, self.info.usage)
         data, result_type = _outcome_data(outcome, kind)
         explanation = _explanation(outcome, kind)
         self.handle.events.add(
@@ -741,7 +683,6 @@ class Session:
                 usage=usage,
             )
         )
-        self._settled.set()
 
     def _checkpoint(self) -> None:
         """Save the agent's state if it changed since the last checkpoint.
@@ -794,13 +735,6 @@ class Session:
         task = self._checkpoint_task
         if task is not None:
             await asyncio.shield(task)
-
-    def _record_cancel(self, by: str) -> None:
-        """Append ``TurnCancelled`` after the interrupted cell's output, and tell listeners."""
-        interrupted = self._interrupted.tag if self._interrupted is not None else None
-        self._interrupted = None
-        self.agent.event_manager.add(TurnCancelled(by=by, interrupted=interrupted))
-        self._emit(CancelledUpdate(session_id=self.id, by=by, interrupted=interrupted))
 
     def _record_finished(self, item_id: str, outcome: Any) -> None:
         """Keep a recent item's outcome so ``outcome()`` can still answer it."""
@@ -896,7 +830,7 @@ class Session:
         if previous is not None:
             await _aclose(previous[1])
 
-    async def _apply_pending_model(self) -> None:
+    def _apply_pending_model(self) -> None:
         pending, self._pending_model = self._pending_model, None
         if pending is None:
             return
@@ -908,7 +842,10 @@ class Session:
             if self.llm_in_use(old):
                 self._retired_llms.append(old)  # a child shares it: close it with this session
             else:
-                await _aclose(old)
+                # Closed off the turn path; close() waits for it.
+                task = asyncio.get_running_loop().create_task(_aclose(old))
+                self._closing_clients.add(task)
+                task.add_done_callback(self._closing_clients.discard)
         # New same-model children share the new client.
         self.options = self.options.model_copy(update={"model": alias, "llm": client})
         self.info.model = alias
@@ -972,16 +909,6 @@ class Session:
             return
         if isinstance(event, LLMResponse):
             self._count_usage(event)
-        if (
-            isinstance(event, PythonOutput)
-            and event.execution_status is ResultStatus.CANCELLED
-            and self._turn_task is not None
-            and self._interrupted is None
-        ):
-            # The first cancelled cell output of this turn. Handlers run
-            # before the event gets its tag, so keep the event and read the
-            # tag when the turn settles.
-            self._interrupted = event
         update = AgentEventUpdate(
             session_id=self.id, event_id=str(event.id), event_type=event.event_type
         )
@@ -1007,17 +934,6 @@ def _steer_source(source: str) -> str:
         name = source.removeprefix("parent:")
         return f"New message from your parent agent {name} while you were working."
     return f"New message from {source} while you were working."
-
-
-def _classify(result: Any) -> tuple[Any, OutcomeKind]:
-    """Map a turn method's return value to an outcome."""
-    if isinstance(result, Done):
-        return result, "done"
-    if isinstance(result, NeedInput):
-        return result, "need_input"
-    if isinstance(result, Waiting):
-        return result, "waiting"
-    return TurnFailedError(f"turn returned {type(result).__name__}, not a turn result"), "error"
 
 
 def _outcome_data(outcome: Any, kind: OutcomeKind) -> tuple[dict[str, Any], str | None]:
