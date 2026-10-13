@@ -1109,7 +1109,10 @@ class ShellTools(Skill):
     async def replace(
         self,
         target: Annotated[
-            Any, spec(description="A Match (from read() or run().matches) or a file path string")
+            Any,
+            spec(
+                description="A Match (from read() or run().matches) or an absolute file path string"
+            ),
         ],
         old_or_new: Annotated[
             str,
@@ -1125,7 +1128,7 @@ class ShellTools(Skill):
         Edit via replace(match: Match, new_text: str) or replace(file_path: str, old_text: str, new_text: str); line numbers are not handles.
 
         1. replace(match, new_text) — replace the Match's line region.
-        2. replace(path, old, new)  — old must match exactly once. new="" deletes.
+        2. replace(path, old, new)  — path should be absolute; old must match exactly once. new="" deletes.
 
         A Match replaces its entire line region, not a substring within it.
         Stale or invalid anchors raise StaleMatchError without writing; re-read or
@@ -1134,7 +1137,7 @@ class ShellTools(Skill):
         Supplying new with a Match is an error; use the path form for old -> new.
 
         Args:
-            target: A Match or file path string.
+            target: A Match or an absolute file path string.
             old_or_new: For Match: the new text. For path: old text to find.
             new: Only for path form: the replacement text.
         """
@@ -1234,14 +1237,14 @@ class ShellTools(Skill):
 
     async def write_file(
         self,
-        path: Annotated[str, spec(description="File path (relative to cwd or absolute)")],
+        path: Annotated[str, spec(description="Absolute file path")],
         content: Annotated[str, spec(description="Full file content")],
     ) -> FileWrite:
         """
         Create or overwrite a file with content (no shell quoting needed).
 
         Args:
-            path: File path (relative to cwd or absolute).
+            path: Absolute file path (a relative path resolves against the shell's current directory).
             content: Full file content.
         """
         resolved = self._resolve_path(path)

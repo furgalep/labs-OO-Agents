@@ -248,7 +248,7 @@ class AtomAgent(InteractiveAgent):
         return (
             f"Working directory (already active for `self.shell` and `self.repo`; persists across cells and turns): {cwd}\n"
             f"Repository root (the boundary for repo searches): {root}\n"
-            "Use relative paths; call `cd` only to intentionally change directories.\n"
+            "Use absolute file paths; call `cd` only to intentionally change directories.\n"
             f"`self.v`: {count} persistent vars — inspect: `print(self.v.items())`; "
             "remove one: `del self.v.<name>`; clear all: `self.v.clear()`"
         )

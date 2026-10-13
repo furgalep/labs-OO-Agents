@@ -469,7 +469,10 @@ class ActivityShellTools(Skill):
     async def replace(
         self,
         target: Annotated[
-            Any, spec(description="A Match (from read() or run().matches) or a file path string")
+            Any,
+            spec(
+                description="A Match (from read() or run().matches) or an absolute file path string"
+            ),
         ],
         old_or_new: Annotated[
             str,
@@ -538,7 +541,7 @@ class ActivityShellTools(Skill):
     @wraps(ShellTools.write_file)
     async def write_file(
         self,
-        path: Annotated[str, spec(description="File path (relative to cwd or absolute)")],
+        path: Annotated[str, spec(description="Absolute file path")],
         content: Annotated[str, spec(description="Full file content")],
     ) -> FileWrite:
         resolved = self._resolve_path(path)
