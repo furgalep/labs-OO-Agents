@@ -1243,13 +1243,19 @@ class ShellTools(Skill):
         """
         Create or overwrite a file with content (no shell quoting needed).
 
+        The parent folder must already exist; missing folders are not created.
+
         Args:
             path: Absolute file path (a relative path resolves against the shell's current directory).
             content: Full file content.
         """
         resolved = self._resolve_path(path)
+        if not resolved.parent.is_dir():
+            raise FileNotFoundError(
+                f"write_file: folder {resolved.parent} does not exist; nothing was written. "
+                "Check the path, or create the folder first (e.g. run('mkdir -p ...'))."
+            )
         existed = resolved.exists()
-        resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content)
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         verb = "Overwrote" if existed else "Created"

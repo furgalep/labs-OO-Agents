@@ -46,6 +46,7 @@ async def test_deletion_is_visible_in_diff(tmp_path):
 @pytest.mark.asyncio
 async def test_write_file_reports_absolute_path_and_overwrite(tmp_path):
     shell = ShellTools(cwd=tmp_path)
+    (tmp_path / "sub").mkdir()
     target = (tmp_path / "sub" / "new.txt").resolve()
     r1 = await shell.write_file(str(target), "x\ny\n")
     assert r1.message == f"Created {target} (2 lines)"
@@ -56,6 +57,7 @@ async def test_write_file_reports_absolute_path_and_overwrite(tmp_path):
 @pytest.mark.asyncio
 async def test_relative_paths_are_still_accepted_and_reported_absolute(tmp_path):
     shell = ShellTools(cwd=tmp_path)
+    (tmp_path / "sub").mkdir()
     w = await shell.write_file("sub/new.txt", "a\nb\n")
     target = (tmp_path / "sub" / "new.txt").resolve()
     assert w.message == f"Created {target} (2 lines)"
@@ -72,3 +74,14 @@ async def test_match_replace_still_works_after_relative_read(tmp_path):
     m = await shell.read("c.txt", lines=(1, 1))
     await shell.replace(m, "z\n")
     assert f.read_text() == "z\nb\n"
+
+
+@pytest.mark.asyncio
+async def test_write_file_fails_when_folder_is_missing(tmp_path):
+    shell = ShellTools(cwd=tmp_path)
+    target = tmp_path / "a" / "b" / "new.txt"
+    with pytest.raises(FileNotFoundError) as caught:
+        await shell.write_file(str(target), "x\n")
+    assert str(target.parent.resolve()) in str(caught.value)
+    assert "nothing was written" in str(caught.value)
+    assert not (tmp_path / "a").exists()
