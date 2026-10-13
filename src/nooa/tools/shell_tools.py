@@ -46,6 +46,10 @@ from nooa.tools._results import StreamDone, StreamEvent
 class FileWrite:
     """Result of a write/replace operation.
 
+    ``diff`` is a unified diff of the edit in file line numbers, for callers
+    and observers; like ``new_text`` it is left out of ``__str__``, so the
+    agent sees only ``message``.
+
     ``new_text`` is the text as it was actually written, after any
     normalization the write applied. Observers report from it so what they
     record matches what landed on disk. It is deliberately left out of
@@ -59,10 +63,7 @@ class FileWrite:
         self.new_text = new_text
 
     def __str__(self) -> str:
-        parts = [self.message]
-        if self.diff:
-            parts.append(self.diff)
-        return "\n".join(parts)
+        return self.message
 
     def __repr__(self) -> str:
         return str(self)
@@ -235,6 +236,38 @@ def _stale_match_diff(expected: str, current: str | None) -> tuple[str, bool, st
         else "Diff preview:"
     )
     return preview, complete, detail
+
+
+def _line_total(text: str) -> int:
+    return len(text.splitlines())
+
+
+def _edit_diff(path: str, old: str, new: str, start_line: int) -> str:
+    """Unified diff of one edited region, in file line numbers."""
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    offset = start_line - 1
+    out: list[str] = []
+    for chunk in difflib.unified_diff(
+        old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}"
+    ):
+        if offset and chunk.startswith("@@ "):
+            chunk = re.sub(
+                r"^@@ -(\d+)(,\d+)? \+(\d+)(,\d+)? @@",
+                lambda m: (
+                    f"@@ -{int(m[1]) + offset}{m[2] or ''} +{int(m[3]) + offset}{m[4] or ''} @@"
+                ),
+                chunk,
+            )
+        out.append(chunk if chunk.endswith("\n") else chunk + "\n")
+    return "".join(out)
+
+
+def _replaced_summary(start: int, old: str, new: str) -> str:
+    old_n, new_n = _line_total(old), _line_total(new)
+    end = start + max(old_n, 1) - 1
+    span = f"line {start}" if end == start else f"lines {start}-{end}"
+    return f"replaced {span} ({old_n} line{'s' if old_n != 1 else ''}) with {new_n} line{'s' if new_n != 1 else ''}"
 
 
 class ShellResult(str):
@@ -1159,12 +1192,11 @@ class ShellTools(Skill):
             new_content = "".join(before) + new_text + "".join(after)
             resolved.write_text(new_content)
 
-            diff = f"--- a/{target.path}\n+++ b/{target.path}\n"
-            diff += f"@@ -{target.start},{target.end - target.start + 1} @@\n"
+            old_region = "".join(all_lines[target.start - 1 : target.end])
             return FileWrite(
                 path=target.path,
-                message=f"Edited {target.path} (replaced lines {target.start}-{target.end})",
-                diff=diff,
+                message=f"Edited {resolved} ({_replaced_summary(target.start, old_region, new_text)})",
+                diff=_edit_diff(str(target.path), old_region, new_text, target.start),
                 new_text=new_text,
             )
 
@@ -1190,10 +1222,11 @@ class ShellTools(Skill):
             new_content = content.replace(old_text, new, 1)
             resolved.write_text(new_content)
 
+            start = content.count("\n", 0, content.index(old_text)) + 1
             return FileWrite(
                 path=target,
-                message=f"Edited {target}",
-                diff=f"--- a/{target}\n+++ b/{target}",
+                message=f"Edited {resolved} ({_replaced_summary(start, old_text, new)})",
+                diff=_edit_diff(target, old_text, new, start),
                 new_text=new,
             )
         else:
@@ -1212,11 +1245,13 @@ class ShellTools(Skill):
             content: Full file content.
         """
         resolved = self._resolve_path(path)
+        existed = resolved.exists()
         resolved.parent.mkdir(parents=True, exist_ok=True)
         resolved.write_text(content)
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        verb = "Overwrote" if existed else "Created"
         return FileWrite(
             path=path,
-            message=f"Created {path} ({line_count} lines)",
+            message=f"{verb} {resolved} ({line_count} lines)",
             new_text=content,
         )
