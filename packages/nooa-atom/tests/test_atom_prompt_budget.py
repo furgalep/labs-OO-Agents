@@ -50,9 +50,12 @@ RESULT = (
 # Raised for #447 review (2026-10-14: replace() split into replace() and
 # replace_match(), self.web removed, show() names nooa.media.Image; about 300
 # characters net): measured values plus about 2% headroom.
+# Added handle_orchestrate (#446, v2 orchestrator prompt) on top of #447 for
+# the combined eval branch: measured values plus about 2% headroom.
 LIMITS = {
     (ATOM, "handle"): (14_850, 17_950),  # measured 14,548 / 17,560
     (ATOM, "handle_batch"): (14_850, 17_450),  # measured 14,548 / 17,098
+    (ATOM, "handle_orchestrate"): (14_850, 19_100),  # measured 14,548 / 18,685
     (EXPERIMENTAL, "handle"): (14_650, 16_450),  # measured 14,363 / 16,134
     (EXPERIMENTAL, "handle_batch"): (14_650, 16_850),  # measured 14,363 / 16,487
 }
@@ -72,7 +75,7 @@ def _no_installed_skills(monkeypatch, tmp_path):
 
 @pytest.mark.parametrize(("spec", "method"), list(LIMITS))
 async def test_first_call_prompt_stays_within_budget(spec, method, tmp_path, sessions_dir):
-    code = RESULT if method == "handle_batch" else "return_result(Done(explanation='x'))"
+    code = RESULT if method != "handle" else "return_result(Done(explanation='x'))"
     response = python_cell(code, "call_1")
     llm = FakeLLMClient([response], strict_exhaustion=True)
     workspace = tmp_path / "workspace"
