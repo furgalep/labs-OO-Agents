@@ -54,6 +54,19 @@ paths in requirements are **not** copied by Gym's runtime archive. Install the
 bridge in the server environment too if that execution mode imports it there.
 No bootstrap or Gym source modification is required or included here.
 
+## Background services through grading
+
+`invoke_atom` runs inside NOOA's `preserve_background_services()` scope.
+Services the agent starts with `nohup ... &` (root session or delegated
+children) survive `registry.close_all()`; only the bash processes exit. The
+pinned NOOA (`a73bbd55`/`72fecea1`) adopts shells into the scope from a
+ContextVar, but `SessionRegistry` builds each agent in a fresh
+`contextvars.Context`, so the bridge adopts each session's shell explicitly in
+its agent factory. The outer harness (Gym's sandbox supervisor with
+`retain_task_services_until_close: true`) must reap these services after
+verification. `tests/test_retain_services.py` checks root and child services
+outlive the invocation, plus a control showing they die without adoption.
+
 ## Focused offline checks
 
 Use a pristine Gym checkout at the exact commit above. In a new environment,
