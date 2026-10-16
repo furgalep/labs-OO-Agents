@@ -65,6 +65,9 @@ RESULT = (
 # Combined eval branch eval/armD-447-446-451 (#447 + #446 + #451, with
 # handle_orchestrate on the #451 child API and the D4/D6 guidance):
 # measured values plus about 2% headroom.
+# Re-measured when InteractiveAgent gained the base handle_work and TaskResult
+# moved to nooa.interactive (2026-10-16): unchanged for every row (the Atom
+# agents override handle_work), so the limits stay.
 LIMITS = {
     (ATOM, "handle"): (15_450, 18_550),  # measured 15,100 / 18,158
     (ATOM, "handle_batch"): (15_450, 18_050),  # measured 15,100 / 17,650
