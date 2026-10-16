@@ -62,15 +62,17 @@ RESULT = (
 # spawn() kept, with no mode=/keep=/context= parameters and no
 # ChildRef.steer()/info/pending_question (about 150 characters less than at
 # 5b84477a7). Measured values plus about 2%.
-# Combined eval branch (#447 + #446 + #451): re-measured, plus about 2%.
+# Combined eval branch eval/armD-447-446-451 (#447 + #446 + #451, with
+# handle_orchestrate on the #451 child API and the D4/D6 guidance):
+# measured values plus about 2% headroom.
 LIMITS = {
-    (ATOM, "handle"): (15_150, 18_150),  # measured 14,837 / 17,788
-    (ATOM, "handle_batch"): (15_150, 17_750),  # measured 14,837 / 17,386
-    (ATOM, "handle_work"): (15_150, 18_350),  # measured 14,837 / 17,993
-    (EXPERIMENTAL, "handle"): (14_950, 16_750),  # measured 14,635 / 16,405
-    (EXPERIMENTAL, "handle_batch"): (14_950, 17_100),  # measured 14,635 / 16,758
-    (EXPERIMENTAL, "handle_work"): (14_950, 17_450),  # measured 14,635 / 17,070
-    (ATOM, "handle_orchestrate"): (15_150, 19_400),  # re-measure
+    (ATOM, "handle"): (15_450, 18_550),  # measured 15,100 / 18,158
+    (ATOM, "handle_batch"): (15_450, 18_050),  # measured 15,100 / 17,650
+    (ATOM, "handle_work"): (15_450, 18_650),  # measured 15,100 / 18,257
+    (ATOM, "handle_orchestrate"): (15_450, 20_050),  # measured 15,100 / 19,629
+    (EXPERIMENTAL, "handle"): (15_200, 17_000),  # measured 14,875 / 16,646
+    (EXPERIMENTAL, "handle_batch"): (15_200, 17_350),  # measured 14,875 / 16,999
+    (EXPERIMENTAL, "handle_work"): (15_200, 17_700),  # measured 14,875 / 17,311
 }
 # The bench guard's system-prompt ceiling; every agent stays under it.
 BENCH_SYSTEM_LIMIT = 20_000
