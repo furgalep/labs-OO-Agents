@@ -50,7 +50,7 @@ async def test_delegate_and_wait_returns_the_childs_done(registry, root_options,
     models.scripts[None] = [
         cell(
             "child = await self.session.delegate('Review auth', 'CHILD-PROMPT')\n"
-            "done = await child.wait()\n"
+            "done = (await child.wait()).done\n"
             "return_result(Done(explanation=f'{child.name}: {done.explanation}'))"
         )
     ]
@@ -60,7 +60,7 @@ async def test_delegate_and_wait_returns_the_childs_done(registry, root_options,
     assert outcome == Done(explanation="Review auth: login is fine")
 
     [child_options] = [o for o in models.built if o.name == "Review auth"]
-    assert (child_options.turn_method, child_options.retain) == ("handle_batch", False)
+    assert (child_options.turn_method, child_options.kept) == ("handle_batch", False)
     assert "CHILD-PROMPT" in str(models.llms["Review auth"].calls[0].messages)
     # The throwaway child is closed after its result, which went to the
     # waiter only: the parent ran no extra turn for it.
@@ -75,7 +75,7 @@ async def test_a_pydantic_result_arrives_as_its_own_class(registry, root_options
     models.scripts[None] = [
         cell(
             "child = await self.session.delegate('Fix', 'fix it')\n"
-            "done = await child.wait()\n"
+            "done = (await child.wait()).done\n"
             "self.v.result = done.result\n"
             "return_result(Done(explanation=type(done.result).__name__))"
         )
@@ -97,7 +97,7 @@ async def test_a_throwaway_child_cannot_ask_and_ends_done(registry, root_options
     models.scripts[None] = [
         cell(
             "child = await self.session.delegate('Push', 'push the branch')\n"
-            "done = await child.wait()\n"
+            "done = (await child.wait()).done\n"
             "return_result(Done(explanation=done.explanation))"
         )
     ]
@@ -131,7 +131,7 @@ async def test_a_background_result_wakes_the_parent(registry, root_options, mode
 async def test_a_retained_childs_question_is_answered_with_send(registry, root_options, models):
     models.scripts[None] = [
         cell(
-            "await self.session.delegate('Helper', 'ask me', retain=True)\n"
+            "await self.session.delegate('Helper', 'ask me', kept=True)\n"
             "return_result(Waiting(explanation='child working', on=['delegates']))"
         ),
         cell(
@@ -164,7 +164,7 @@ async def test_a_retained_childs_question_is_answered_with_send(registry, root_o
     assert outcome == Done(explanation="second: SECOND-MESSAGE")
     assert root._agent.v.schema_title == "Answer"
     [child_options] = [o for o in models.built if o.name == "Helper"]
-    assert (child_options.turn_method, child_options.retain) == ("handle", True)
+    assert (child_options.turn_method, child_options.kept) == ("handle", True)
     [helper] = registry.children(root.id)
     assert registry.get(helper.id) is not None  # retained: still live
     assert helper.status == "retained"
@@ -175,7 +175,7 @@ async def test_a_child_ref_kept_in_vars_works_after_a_reload(
 ):
     models.scripts[None] = [
         cell(
-            "self.v.helper = await self.session.delegate('Keeper', 'get ready', retain=True)\n"
+            "self.v.helper = await self.session.delegate('Keeper', 'get ready', kept=True)\n"
             "return_result(Waiting(explanation='child working', on=['delegates']))"
         ),
         done("child is ready"),
@@ -238,7 +238,7 @@ async def test_children_rename_and_usage(registry, root_options, models):
     usage = LLMUsage(input_tokens=7, output_tokens=3, cost_usd=0.25)
     models.scripts[None] = [
         cell(
-            "a = await self.session.delegate('A', 'a', retain=True)\n"
+            "a = await self.session.delegate('A', 'a', kept=True)\n"
             "await a.wait()\n"
             "await self.session.rename('Renamed by the agent')\n"
             "names = sorted(c.name for c in self.session.children())\n"
@@ -309,7 +309,7 @@ async def test_wait_takes_a_result_that_is_already_queued(registry, root_options
             "async with asyncio.timeout(5):\n"
             "    while delegates.qsize() == 0:\n"
             "        await asyncio.sleep(0.01)\n"
-            "done = await child.wait()\n"
+            "done = (await child.wait()).done\n"
             "return_result(Done(explanation=done.explanation))"
         )
     ]
@@ -326,7 +326,7 @@ async def test_a_result_for_a_cancelled_wait_arrives_on_delegates(registry, root
     started, block = fresh_events()
     models.scripts[None] = [
         cell(
-            "c = await self.session.delegate('Kid', 'k', retain=True)\n"
+            "c = await self.session.delegate('Kid', 'k', kept=True)\n"
             "await c.wait()\n"
             "return_result(Done(explanation='not reached'))"
         ),
@@ -410,7 +410,8 @@ async def test_the_port_can_be_hidden_from_the_model(registry, root_options, mak
     assert isinstance(session._agent.session, SessionPort)
 
 
-async def test_closed_children_are_on_disk_everywhere(registry, root_options, models):
+async def test_closed_children_read_closed_everywhere(registry, root_options, models):
+    """A child its parent closed (here: keep=False, after its result) reads ``closed``."""
     models.scripts[None] = [
         cell(
             "c = await self.session.delegate('Gone', 'g')\n"
@@ -424,8 +425,8 @@ async def test_closed_children_are_on_disk_everywhere(registry, root_options, mo
     [info] = registry.children(root.id)
     await until(lambda: registry.get(info.id) is None)
     [ref] = root._agent.session.children()
-    assert ref.status == "on_disk" == registry.children(root.id)[0].status
-    assert registry._ref_from_disk(info.id).status == "on_disk"
+    assert ref.status == "closed" == registry.children(root.id)[0].status
+    assert registry._ref_from_disk(info.id).status == "closed"
 
 
 # ---- ownership: only the parent acts on its child ------------------------
@@ -434,7 +435,7 @@ async def test_closed_children_are_on_disk_everywhere(registry, root_options, mo
 async def _two_roots_and_a_child(registry, root_options):
     root = await registry.create(root_options)
     other = await registry.create(root_options.model_copy(update={"name": "other"}))
-    child = await registry.create(root.options.inherit(name="kid", retain=True), parent_id=root.id)
+    child = await registry.create(root.options.inherit(name="kid", kept=True), parent_id=root.id)
     return root, other, child
 
 
@@ -443,8 +444,6 @@ async def test_a_session_cannot_act_on_another_sessions_live_child(registry, roo
     port = other._agent.session
     with pytest.raises(ChildFailedError, match="not a child"):
         await port.send_child(child.id, "hijack", channel="user_messages")
-    with pytest.raises(ChildFailedError, match="not a child"):
-        await port.steer_child(child.id, "hijack")
     with pytest.raises(ChildFailedError, match="not a child"):
         await port.wait_child(child.id)
     with pytest.raises(ChildFailedError, match="not a child"):
@@ -468,7 +467,8 @@ async def test_a_wrong_owner_cannot_take_the_parents_queued_result(registry, roo
         registry.take_queued_result(other, child.id)
     assert list(registry._queued) == [(root.id, child.id)]
     assert root._agent.queue_manager.get_channel("delegates").qsize() == 1
-    assert await root._agent.session.wait_child(child.id) == Done(explanation="for root")
+    outcome = await root._agent.session.wait_child(child.id)
+    assert outcome.done == Done(explanation="for root")
 
 
 async def test_waiters_are_per_parent(registry, root_options):
