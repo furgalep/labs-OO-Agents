@@ -35,8 +35,9 @@ ORCHESTRATOR_TEXT = (
 # Changing either prompt on purpose means updating its digest here.
 UNCHANGED_PROMPTS = {
     # handle() as on #451 (its "or from your parent agent if you are a child"
-    # line); the eval branch's digest also covered #447's NeedInput wording.
-    "handle": "ee49e14964d1057456b02611f7d6862623cc8ab5b4da4c4dd0d54be7a5d54175",
+    # line) plus #447's NeedInput wording: the arm E eval branch (#447 merged
+    # with #451) measures this digest of the merged docstring.
+    "handle": "ce9800990421efdd718c60f4fe8eee4908eec54437fc0161d60f04f1ab57a1ae",
     "handle_batch": "9124c2874abd30f61a26f313abacbdc925f02a20efac8b4d7e3319a22ab545f0",
 }
 
