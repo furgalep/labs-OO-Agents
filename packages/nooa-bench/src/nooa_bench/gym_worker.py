@@ -82,6 +82,7 @@ async def main(input_path: Path, output_path: Path) -> None:
         extra_headers=payload.get("headers") or {},
         cookies=payload.get("cookies") or {},
         resource_cookies=resource_cookies,
+        context_window=payload.get("context_window"),
     )
     episode.runtime = {
         "python": sys.executable,

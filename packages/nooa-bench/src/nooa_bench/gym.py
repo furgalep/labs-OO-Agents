@@ -121,16 +121,23 @@ class _RecordingClient(ResponsesClient):
         *args: Any,
         max_policy_calls: int | None,
         records: list[ModelCallRecord],
+        context_window: int | None = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
         self._max_policy_calls = max_policy_calls
         self._records = records
+        # Client metadata only: passed as config it would leak into the request body.
+        self._context_window_override = context_window
         self._pending: dict[int, ModelCallRecord] = {}
         self._http.httpx_async.event_hooks = {
             "request": [self._on_request],
             "response": [self._on_response],
         }
+
+    @property
+    def context_window(self) -> int | None:  # NOOA's runtime reads this for context budgeting
+        return self._context_window_override or super().context_window
 
     async def _on_request(self, request: httpx.Request) -> None:
         # Gym attributes a model call to an invocation through this header.
@@ -481,6 +488,7 @@ async def run_gym_episode(
     extra_headers: dict[str, str] | None = None,
     cookies: dict[str, str] | None = None,
     resource_cookies: dict[str, str] | None = None,
+    context_window: int | None = None,
 ) -> GymEpisode:
     """Run one NOOA agent activation against a Gym model server and return the evidence.
 
@@ -497,6 +505,7 @@ async def run_gym_episode(
         http_config=http_config or HttpConfig(read_timeout=600, request_timeout=None),
         max_policy_calls=max_policy_calls,
         records=model_calls,
+        context_window=context_window,
     )
     if cookies:
         client._http.httpx_async.cookies.update(cookies)
