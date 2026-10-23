@@ -122,6 +122,7 @@ class _RecordingClient(ResponsesClient):
         max_policy_calls: int | None,
         records: list[ModelCallRecord],
         context_window: int | None = None,
+        replay_reasoning: bool = False,
         **kwargs: Any,
     ):
         # Gym's model server validates requests strictly (no extra body keys) and fronts vLLM,
@@ -136,6 +137,7 @@ class _RecordingClient(ResponsesClient):
         self._records = records
         # Client metadata only: passed as config it would leak into the request body.
         self._context_window_override = context_window
+        self._replay_reasoning = replay_reasoning
         self._pending: dict[int, ModelCallRecord] = {}
         self._http.httpx_async.event_hooks = {
             "request": [self._on_request],
@@ -145,6 +147,26 @@ class _RecordingClient(ResponsesClient):
     @property
     def context_window(self) -> int | None:  # NOOA's runtime reads this for context budgeting
         return self._context_window_override or super().context_window
+
+    def _prepare_input(
+        self, messages, state_scope, model, native_encrypted_reasoning=False, *, media_inputs=None
+    ):
+        # The Gym route looks like OpenAI, so ResponsesClient would replay every prior reasoning
+        # item (summary text, no encrypted state). Gym's chat-backed servers render those back
+        # into the prompt as <think> text, which the thick nooa_agent never sends: about 1.5x the
+        # input per call and a different model view of its own history. Off unless asked for.
+        input_messages, instructions = self._transform_messages(
+            messages, state_scope, native_encrypted_reasoning, media_inputs=media_inputs
+        )
+        if not self._replay_reasoning:
+            input_messages = [
+                m
+                for m in input_messages
+                if not (isinstance(m, dict) and m.get("type") == "reasoning")
+            ]
+        return self._prepare_cache_boundary(
+            input_messages, responses=True, model=model, instructions=instructions
+        )
 
     async def _on_request(self, request: httpx.Request) -> None:
         # Gym attributes a model call to an invocation through this header.
@@ -496,6 +518,7 @@ async def run_gym_episode(
     cookies: dict[str, str] | None = None,
     resource_cookies: dict[str, str] | None = None,
     context_window: int | None = None,
+    replay_reasoning: bool = False,
 ) -> GymEpisode:
     """Run one NOOA agent activation against a Gym model server and return the evidence.
 
@@ -513,6 +536,7 @@ async def run_gym_episode(
         max_policy_calls=max_policy_calls,
         records=model_calls,
         context_window=context_window,
+        replay_reasoning=replay_reasoning,
     )
     if cookies:
         client._http.httpx_async.cookies.update(cookies)

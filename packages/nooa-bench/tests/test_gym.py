@@ -22,9 +22,9 @@ from nooa_bench.gym import (
     ShellAgent,
     ToolCallRecord,
     ToolLoopStrategy,
-    _RecordingClient,
     _classify,
     _episode_items,
+    _RecordingClient,
     resource_tools,
     run_gym_episode,
 )
@@ -328,14 +328,26 @@ async def test_run_gym_episode_records_wire_and_tools():
 
 
 def test_recording_client_keeps_openai_explicit_cache_off():
-    client = _RecordingClient("gym-policy", max_policy_calls=None, records=[], api_base="http://127.0.0.1:1/v1")
+    client = _RecordingClient(
+        "gym-policy", max_policy_calls=None, records=[], api_base="http://127.0.0.1:1/v1"
+    )
     assert client.cache_breakpoint is None
-    history = [{"role": "system", "content": "stable"}, CacheBoundary(), {"role": "user", "content": "task"}]
-    _messages, _instructions, openai_explicit = client._prepare_cache_boundary(history, responses=True)
+    history = [
+        {"role": "system", "content": "stable"},
+        CacheBoundary(),
+        {"role": "user", "content": "task"},
+    ]
+    _messages, _instructions, openai_explicit = client._prepare_cache_boundary(
+        history, responses=True
+    )
     assert openai_explicit is False
     # Still an opt-in for providers that support it.
     explicit = _RecordingClient(
-        "gym-policy", max_policy_calls=None, records=[], api_base="http://127.0.0.1:1/v1", cache_breakpoint="openai"
+        "gym-policy",
+        max_policy_calls=None,
+        records=[],
+        api_base="http://127.0.0.1:1/v1",
+        cache_breakpoint="openai",
     )
     assert explicit.cache_breakpoint == "openai"
 
@@ -355,3 +367,96 @@ async def test_run_gym_episode_policy_budget_is_a_gradable_stop():
         await task
     assert episode.stop_reason == "policy_budget_exceeded"
     assert len(log) == 1
+
+
+def _reasoning_app(log: list[dict]) -> FastAPI:
+    """First turn: a reasoning item plus a shell call; second turn: the final message."""
+    app = FastAPI()
+    state = {"n": 0}
+
+    @app.post("/ng-rollout/{rollout_id}/v1/responses")
+    async def responses(rollout_id: str, request: Request):
+        log.append({"body": await request.json()})
+        state["n"] += 1
+        if state["n"] == 1:
+            output = [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "status": "completed",
+                    "summary": [
+                        {"type": "summary_text", "text": "Let me start by running the command."}
+                    ],
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "shell",
+                    "status": "completed",
+                    "arguments": json.dumps({"command": "echo hi"}),
+                },
+            ]
+        else:
+            output = [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "DONE", "annotations": []}],
+                }
+            ]
+        return JSONResponse(
+            {
+                "id": f"resp_{state['n']}",
+                "object": "response",
+                "created_at": 1,
+                "status": "completed",
+                "error": None,
+                "incomplete_details": None,
+                "model": "gym-policy",
+                "output": output,
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            }
+        )
+
+    return app
+
+
+async def _second_request_types(replay_reasoning: bool) -> tuple[list[str], GymEpisode]:
+    log: list[dict] = []
+    server, task, port = await _serve(_reasoning_app(log))
+
+    async def run_command(command: str) -> str:
+        return "hi\n[exit 0]"
+
+    try:
+        episode = await run_gym_episode(
+            lambda llm: ShellAgent(llm=llm, run_command=run_command),
+            lambda agent: agent.solve("say hi"),
+            model_url=f"http://127.0.0.1:{port}/ng-rollout/r1/v1",
+            max_policy_calls=5,
+            replay_reasoning=replay_reasoning,
+        )
+    finally:
+        server.should_exit = True
+        await task
+    assert episode.stop_reason == "completed", episode.error
+    return [item.get("type") or item.get("role") for item in log[1]["body"]["input"]], episode
+
+
+async def test_prior_reasoning_is_not_replayed_by_default():
+    # The Gym route looks like OpenAI, so ResponsesClient would otherwise replay the reasoning
+    # summary every turn; the thick nooa_agent never does, and chat-backed Gym servers would
+    # render it back to the policy as <think> text.
+    types, episode = await _second_request_types(replay_reasoning=False)
+    assert "reasoning" not in types, types
+    assert "function_call" in types and "function_call_output" in types
+    # The capture still has the reasoning the policy produced.
+    assert any(item["type"] == "reasoning" for item in episode.model_calls[0].response["output"])
+
+
+async def test_prior_reasoning_is_replayed_when_asked():
+    types, _ = await _second_request_types(replay_reasoning=True)
+    assert "reasoning" in types, types

@@ -83,6 +83,7 @@ async def main(input_path: Path, output_path: Path) -> None:
         cookies=payload.get("cookies") or {},
         resource_cookies=resource_cookies,
         context_window=payload.get("context_window"),
+        replay_reasoning=bool(payload.get("replay_reasoning", False)),
     )
     episode.runtime = {
         "python": sys.executable,
