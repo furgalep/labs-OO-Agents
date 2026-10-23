@@ -323,6 +323,8 @@ async def test_run_gym_episode_records_wire_and_tools():
     assert "gym_model_session=s1" in log[1]["headers"].get("cookie", "")
     # Gym's request model forbids extra keys; the OpenAI explicit cache option must never go out.
     assert all("prompt_cache_options" not in entry["body"] for entry in log)
+    # ... and chat-backed Gym model servers cannot downconvert `truncation`.
+    assert all(entry["body"].get("truncation") is None for entry in log)
 
 
 def test_recording_client_keeps_openai_explicit_cache_off():

@@ -128,6 +128,9 @@ class _RecordingClient(ResponsesClient):
         # so NOOA's OpenAI explicit prompt-cache option (`extra_body.prompt_cache_options`)
         # would be a 400 there. Off unless the harness asks for it explicitly.
         kwargs.setdefault("cache_breakpoint", None)
+        # ResponsesClient sends `truncation: disabled` by default; Gym's chat-backed model servers
+        # cannot downconvert that field and refuse the request. None drops it from the wire.
+        kwargs.setdefault("truncation", None)
         super().__init__(*args, **kwargs)
         self._max_policy_calls = max_policy_calls
         self._records = records
