@@ -22,6 +22,7 @@ from nooa_bench.gym import (
     ShellAgent,
     ToolCallRecord,
     ToolLoopStrategy,
+    _RecordingClient,
     _classify,
     _episode_items,
     resource_tools,
@@ -31,6 +32,7 @@ from nooa_bench.gym import (
 from nooa import Agent, strategy
 from nooa.errors import IterationLimitExceeded, LoopDetectedError, RetryLimitExceeded
 from nooa.unifiedllm import FakeLLMClient, LLMResponse, ToolCall
+from nooa.unifiedllm.cache_policy import CacheBoundary
 
 TRAIN = {"prompt_token_ids": [1, 2], "generation_token_ids": [3], "generation_log_probs": [-0.5]}
 
@@ -319,6 +321,21 @@ async def test_run_gym_episode_records_wire_and_tools():
     assert [t.name for t in episode.tool_calls] == ["shell"]
     assert "x-session-id" in log[0]["headers"]
     assert "gym_model_session=s1" in log[1]["headers"].get("cookie", "")
+    # Gym's request model forbids extra keys; the OpenAI explicit cache option must never go out.
+    assert all("prompt_cache_options" not in entry["body"] for entry in log)
+
+
+def test_recording_client_keeps_openai_explicit_cache_off():
+    client = _RecordingClient("gym-policy", max_policy_calls=None, records=[], api_base="http://127.0.0.1:1/v1")
+    assert client.cache_breakpoint is None
+    history = [{"role": "system", "content": "stable"}, CacheBoundary(), {"role": "user", "content": "task"}]
+    _messages, _instructions, openai_explicit = client._prepare_cache_boundary(history, responses=True)
+    assert openai_explicit is False
+    # Still an opt-in for providers that support it.
+    explicit = _RecordingClient(
+        "gym-policy", max_policy_calls=None, records=[], api_base="http://127.0.0.1:1/v1", cache_breakpoint="openai"
+    )
+    assert explicit.cache_breakpoint == "openai"
 
 
 async def test_run_gym_episode_policy_budget_is_a_gradable_stop():

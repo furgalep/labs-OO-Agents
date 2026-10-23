@@ -124,6 +124,10 @@ class _RecordingClient(ResponsesClient):
         context_window: int | None = None,
         **kwargs: Any,
     ):
+        # Gym's model server validates requests strictly (no extra body keys) and fronts vLLM,
+        # so NOOA's OpenAI explicit prompt-cache option (`extra_body.prompt_cache_options`)
+        # would be a 400 there. Off unless the harness asks for it explicitly.
+        kwargs.setdefault("cache_breakpoint", None)
         super().__init__(*args, **kwargs)
         self._max_policy_calls = max_policy_calls
         self._records = records
