@@ -460,3 +460,93 @@ async def test_prior_reasoning_is_not_replayed_by_default():
 async def test_prior_reasoning_is_replayed_when_asked():
     types, _ = await _second_request_types(replay_reasoning=True)
     assert "reasoning" in types, types
+
+
+def _final_message_app(log: list[dict]) -> FastAPI:
+    """Every turn: record the request and answer with a final text message."""
+    app = FastAPI()
+
+    @app.post("/ng-rollout/{rollout_id}/v1/responses")
+    async def responses(rollout_id: str, request: Request):
+        log.append({"body": await request.json()})
+        return JSONResponse(
+            {
+                "id": "resp_1",
+                "object": "response",
+                "created_at": 1,
+                "status": "completed",
+                "error": None,
+                "incomplete_details": None,
+                "model": "gym-policy",
+                "output": [
+                    {
+                        "type": "message",
+                        "id": "msg_1",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "Red", "annotations": []}],
+                    }
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            }
+        )
+
+    return app
+
+
+class _ImageAgent:
+    """Sends one user turn carrying a captured image, the shape Atom's show() produces."""
+
+    def __init__(self, llm):
+        self.llm = llm
+
+    async def solve(self, task: str):
+        return await self.llm.acall(
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": task},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="},
+                        },
+                    ],
+                }
+            ]
+        )
+
+
+async def _image_request_content(media_inputs: tuple[str, ...]) -> list[dict]:
+    log: list[dict] = []
+    server, task, port = await _serve(_final_message_app(log))
+    try:
+        episode = await run_gym_episode(
+            _ImageAgent,
+            lambda agent: agent.solve("What colour is this?"),
+            model_url=f"http://127.0.0.1:{port}/ng-rollout/r1/v1",
+            max_policy_calls=2,
+            media_inputs=media_inputs,
+        )
+    finally:
+        server.should_exit = True
+        await task
+    assert episode.stop_reason == "completed", episode.error
+    (user_turn,) = [item for item in log[0]["body"]["input"] if item.get("role") == "user"]
+    return user_turn["content"]
+
+
+async def test_images_reach_the_policy_with_detail_when_enabled():
+    # Gym's Responses schema requires `detail` on input_image; NOOA sets it only when the image
+    # carried one, so the harness fills in the Responses default.
+    content = await _image_request_content(media_inputs=("image",))
+    images = [block for block in content if block["type"] == "input_image"]
+    assert images == [
+        {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgo=", "detail": "auto"}
+    ]
+
+
+async def test_images_are_replaced_by_a_note_when_media_is_off():
+    content = await _image_request_content(media_inputs=())
+    assert all(block["type"] == "input_text" for block in content), content
+    assert len(content) == 2 and "image" in content[1]["text"].lower(), content

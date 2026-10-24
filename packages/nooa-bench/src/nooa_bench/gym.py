@@ -123,8 +123,12 @@ class _RecordingClient(ResponsesClient):
         records: list[ModelCallRecord],
         context_window: int | None = None,
         replay_reasoning: bool = False,
+        media_inputs: tuple[str, ...] = (),
         **kwargs: Any,
     ):
+        # NOOA's media policy: image/audio/video/pdf blocks reach the policy only when listed
+        # here; everything else is replaced by a short note before the request is built.
+        kwargs.setdefault("media_inputs", tuple(media_inputs) or None)
         # Gym's model server validates requests strictly (no extra body keys) and fronts vLLM,
         # so NOOA's OpenAI explicit prompt-cache option (`extra_body.prompt_cache_options`)
         # would be a 400 there. Off unless the harness asks for it explicitly.
@@ -164,6 +168,20 @@ class _RecordingClient(ResponsesClient):
                 for m in input_messages
                 if not (isinstance(m, dict) and m.get("type") == "reasoning")
             ]
+        # Gym's request schema requires `detail` on input_image; NOOA only carries one when the
+        # image came with it. "auto" is the Responses API default.
+        for item in input_messages:
+            if not isinstance(item, dict):
+                continue
+            blocks = (
+                item.get("output")
+                if item.get("type") == "function_call_output"
+                else item.get("content")
+            )
+            if isinstance(blocks, list):
+                for block in blocks:
+                    if isinstance(block, dict) and block.get("type") == "input_image":
+                        block.setdefault("detail", "auto")
         return self._prepare_cache_boundary(
             input_messages, responses=True, model=model, instructions=instructions
         )
@@ -519,11 +537,14 @@ async def run_gym_episode(
     resource_cookies: dict[str, str] | None = None,
     context_window: int | None = None,
     replay_reasoning: bool = False,
+    media_inputs: tuple[str, ...] = (),
 ) -> GymEpisode:
     """Run one NOOA agent activation against a Gym model server and return the evidence.
 
     ``resource_cookies`` is the Resources server's cookie jar; tools built with
     :func:`resource_tools` update it in place and the episode reports it back.
+    ``media_inputs`` lists what the policy accepts (``image``, ``audio``, ``video``, ``pdf``);
+    empty is text-only.
     """
     model_calls: list[ModelCallRecord] = []
     tool_calls: list[ToolCallRecord] = []
@@ -537,6 +558,7 @@ async def run_gym_episode(
         records=model_calls,
         context_window=context_window,
         replay_reasoning=replay_reasoning,
+        media_inputs=media_inputs,
     )
     if cookies:
         client._http.httpx_async.cookies.update(cookies)
